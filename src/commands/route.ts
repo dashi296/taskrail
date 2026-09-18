@@ -103,6 +103,7 @@ export function route(opts: RouteOptions): void {
     max_turns: stage.max_turns,
     branch,
     agents: stage.agents.join(","),
+    allowed_bots: allowedBots(ctx.project.bot_logins),
     allowed_tools: stage.mode === "write" ? "Read,Glob,Grep,Edit,Write,Bash" : "Read,Glob,Grep,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*)",
   };
 
@@ -130,6 +131,15 @@ export function route(opts: RouteOptions): void {
   writeFileSync(join(RUN_DIR, "route.json"), JSON.stringify(outputs, null, 2));
   log(`#${issue.number} ${stage.id}: ${stage.agents.join(" → ")} を実行します`);
   setOutputs(outputs);
+}
+
+/**
+ * claude-code-action の allowed_bots に渡す値。ラベル連鎖は taskrail の App が起こすため、
+ * これがないと action は bot 起点のイベントを拒否する。GitHub のログイン名として不正な値は捨てる
+ * (step output への改行の混入を防ぐ)。空なら bot からの起動を一切許可しない。
+ */
+export function allowedBots(logins: string[]): string {
+  return logins.filter((l) => /^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$/.test(l)).join(",");
 }
 
 function checkSender(ctx: Ctx, sender: { login: string; type: string }, issue: number, to: string): string | null {

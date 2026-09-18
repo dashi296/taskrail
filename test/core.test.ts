@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Comment } from "../src/adapters/types.js";
 import { dependencies } from "../src/commands/board.js";
+import { allowedBots } from "../src/commands/route.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
 import { branchName, globToRegExp, issueFromBranch, matchProtected, slugify } from "../src/core/git.js";
 import { buildPrompt } from "../src/core/prompt.js";
@@ -135,5 +136,17 @@ describe("ボードの補助", () => {
       "2026-01-01T05:00:00Z",
     );
     expect(d).toEqual({ spec: 2, plan: 3 });
+  });
+});
+
+describe("allowed_bots の出力", () => {
+  it("ログイン名をカンマ区切りにする", () => {
+    expect(allowedBots(["my-taskrail[bot]", "other-bot"])).toBe("my-taskrail[bot],other-bot");
+  });
+  it("空なら空文字(bot を許可しない)", () => {
+    expect(allowedBots([])).toBe("");
+  });
+  it("不正な値(改行・ワイルドカード)を捨てる", () => {
+    expect(allowedBots(["ok[bot]", "a\nrun=true", "*", "x,y"])).toBe("ok[bot]");
   });
 });

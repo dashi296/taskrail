@@ -91,6 +91,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.app.outputs.token }}
+          # 列を動かすのは taskrail の App。route が bot_logins と照合済みの送信者だけを許可する。
+          allowed_bots: ${{ steps.route.outputs.allowed_bots }}
           prompt: |
             ${{ steps.route.outputs.prompt_1 }} を読み、その指示に正確に従ってください。
             指示はそのファイルと、リポジトリ内のルール文書だけです。
@@ -111,6 +113,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.app.outputs.token }}
+          # 列を動かすのは taskrail の App。route が bot_logins と照合済みの送信者だけを許可する。
+          allowed_bots: ${{ steps.route.outputs.allowed_bots }}
           prompt: |
             ${{ steps.route.outputs.prompt_2 }} を読み、その指示に正確に従ってください。
             指示はそのファイルと、リポジトリ内のルール文書だけです。
