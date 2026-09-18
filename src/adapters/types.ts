@@ -29,6 +29,9 @@ export interface LabelEvent {
 
 export type Permission = "admin" | "write" | "read" | "none";
 
+/** ブランチの先頭コミットに付いた検査(CI)の総合結果。 */
+export type ChecksState = "success" | "pending" | "failure";
+
 /**
  * GitHub と GitLab の差を吸収する層。
  * フローのロジック(core/)はこのインターフェースだけに依存する。
@@ -51,4 +54,6 @@ export interface Platform {
   /** 人間のレビューで付いた修正依頼の本文。 */
   listReviewFeedback(pr: number): string[];
   listLabelEvents(n: number): LabelEvent[];
+  /** ブランチの先頭コミットの検査がすべて成功したか。CI が複数あるとき、1つの成功だけで先へ進めないために使う。 */
+  branchChecks(branch: string): ChecksState;
 }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
+import type { ChecksState, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
 
 /**
  * GitHub アダプタ。`gh` CLI 経由で API を呼ぶ。
@@ -137,6 +137,35 @@ export class GitHub implements Platform {
       .filter((e) => (e.event === "labeled" || e.event === "unlabeled") && e.label)
       .map((e) => ({ label: e.label!.name, action: e.event as "labeled" | "unlabeled", at: e.created_at }));
   }
+
+  branchChecks(branch: string): ChecksState {
+    const sha = this.api(`branches/${encodeURIComponent(branch)}`, { jq: ".commit.sha" }).trim();
+    const runs = this.list<RawCheckRun>(`commits/${sha}/check-runs?per_page=100`, ".check_runs[]");
+    const status = JSON.parse(this.api(`commits/${sha}/status`, { jq: "{state, total_count}" })) as RawCombinedStatus;
+    return summarizeChecks(runs, status);
+  }
+}
+
+interface RawCheckRun {
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+interface RawCombinedStatus {
+  state: string;
+  total_count: number;
+}
+
+/**
+ * check runs(GitHub Actions など)と commit status(外部 CI)をまとめて判定する。
+ * 検査が1つもなければ成功とはみなさない。
+ */
+export function summarizeChecks(runs: RawCheckRun[], status: RawCombinedStatus): ChecksState {
+  if (runs.some((r) => r.status !== "completed")) return "pending";
+  if (runs.some((r) => !["success", "neutral", "skipped"].includes(r.conclusion ?? ""))) return "failure";
+  if (status.total_count > 0 && status.state !== "success") return status.state === "pending" ? "pending" : "failure";
+  if (runs.length === 0 && status.total_count === 0) return "pending";
+  return "success";
 }
 
 interface RawIssue {

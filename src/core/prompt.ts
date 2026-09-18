@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Comment, Issue } from "../adapters/types.js";
-import { packageRoot } from "./config.js";
+import { packageRoot, protectedPaths } from "./config.js";
 import { stripMarkers } from "./record.js";
 
 export interface PromptContext {
@@ -35,7 +35,7 @@ export function repoRules(cwd: string, project: { check_commands: string[]; prot
     docs,
     defaultConstitution: docs.includes("docs/constitution.md") ? null : readFileSync(join(packageRoot(), "flow", "constitution.md"), "utf8"),
     checkCommands: project.check_commands,
-    protectedPaths: project.protected_paths,
+    protectedPaths: protectedPaths(project),
   };
 }
 

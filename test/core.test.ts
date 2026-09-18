@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import type { Comment } from "../src/adapters/types.js";
 import { dependencies } from "../src/commands/board.js";
 import { allowedBots } from "../src/commands/route.js";
-import { branchProtection } from "../src/commands/setup.js";
+import { branchProtection, protectionFacts } from "../src/commands/setup.js";
+import { summarizeChecks } from "../src/adapters/github.js";
+import { protectedPaths } from "../src/core/config.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
 import { branchName, globToRegExp, issueFromBranch, matchProtected, slugify } from "../src/core/git.js";
 import { buildPrompt, repoRules } from "../src/core/prompt.js";
@@ -179,18 +181,76 @@ describe("allowed_bots の出力", () => {
 });
 
 describe("doctor: ブランチ保護の判定", () => {
-  it("classic な保護があれば合格", () => {
-    expect(branchProtection({ classic: true, ruleTypes: [], unavailable: false }).ok).toBe(true);
+  const none = { classic: null, rules: [], rulesetBypassApps: [], unavailable: false };
+  const ok = (text: string) => ({ ok: true, out: text, err: "" });
+  const ng = (err: string) => ({ ok: false, out: "", err });
+
+  it("レビュー必須(承認1件以上)の classic な保護なら合格", () => {
+    expect(branchProtection({ ...none, classic: { approvals: 1, bypassApps: [] } }).ok).toBe(true);
   });
-  it("PR を必須にする ruleset があれば合格", () => {
-    expect(branchProtection({ classic: false, ruleTypes: ["deletion", "pull_request"], unavailable: false }).ok).toBe(true);
+  it("レビュー必須の ruleset なら合格", () => {
+    expect(branchProtection({ ...none, rules: [{ type: "deletion", approvals: 0 }, { type: "pull_request", approvals: 2 }] }).ok).toBe(true);
   });
-  it("PR 必須でない ruleset だけなら不合格", () => {
-    expect(branchProtection({ classic: false, ruleTypes: ["deletion", "non_fast_forward"], unavailable: false }).ok).toBe(false);
+  it("保護があってもレビューが必須でなければ不合格(ステータスチェックだけ、承認0件)", () => {
+    expect(branchProtection({ ...none, classic: { approvals: -1, bypassApps: [] } }).ok).toBe(false);
+    const r = branchProtection({ ...none, rules: [{ type: "pull_request", approvals: 0 }] });
+    expect(r.ok).toBe(false);
+    expect(r.hint).toContain("レビュー");
+  });
+  it("taskrail の App がレビューをバイパスできれば不合格、ほかの App なら注意", () => {
+    const facts = { ...none, classic: { approvals: 1, bypassApps: ["my-taskrail", "release-bot"] } };
+    expect(branchProtection(facts, ["my-taskrail[bot]"]).ok).toBe(false);
+    expect(branchProtection(facts, []).ok).toBe("warn");
+    expect(branchProtection({ ...none, rules: [{ type: "pull_request", approvals: 1 }], rulesetBypassApps: [42] }).ok).toBe("warn");
   });
   it("プランの制約で使えないときも不合格のまま、ヒントで理由を示す", () => {
-    const r = branchProtection({ classic: false, ruleTypes: [], unavailable: true });
+    const r = branchProtection({ ...none, unavailable: true });
     expect(r.ok).toBe(false);
     expect(r.hint).toContain("public");
+  });
+  it("API の応答から承認数とバイパスを取り出す", () => {
+    const classic = ok(JSON.stringify({ required_pull_request_reviews: { required_approving_review_count: 1, bypass_pull_request_allowances: { apps: [{ slug: "x" }] } } }));
+    const rules = ok(JSON.stringify([{ type: "pull_request", ruleset_id: 7, parameters: { required_approving_review_count: 2 } }]));
+    const f = protectionFacts(classic, rules, (id) => (id === 7 ? JSON.stringify({ bypass_actors: [{ actor_id: 42, actor_type: "Integration" }, { actor_id: 5, actor_type: "RepositoryRole" }] }) : null));
+    expect(f.classic).toEqual({ approvals: 1, bypassApps: ["x"] });
+    expect(f.rules).toEqual([{ type: "pull_request", approvals: 2 }]);
+    expect(f.rulesetBypassApps).toEqual([42]);
+  });
+  it("classic がステータスチェックだけなら承認数を -1 とし、プラン制約のエラーを検出する", () => {
+    expect(protectionFacts(ok("{}"), ok("[]"), () => null).classic).toEqual({ approvals: -1, bypassApps: [] });
+    const f = protectionFacts(ng("Upgrade to GitHub Pro or make this repository public"), ng(""), () => null);
+    expect(f.classic).toBeNull();
+    expect(f.unavailable).toBe(true);
+  });
+});
+
+describe("CI の検査結果の集約", () => {
+  const run = (status: string, conclusion: string | null) => ({ name: "t", status, conclusion });
+  const noStatus = { state: "pending", total_count: 0 };
+  it("すべて成功(neutral・skipped を含む)なら成功", () => {
+    expect(summarizeChecks([run("completed", "success"), run("completed", "skipped")], noStatus)).toBe("success");
+  });
+  it("1つでも実行中なら待ち、失敗なら失敗", () => {
+    expect(summarizeChecks([run("completed", "success"), run("in_progress", null)], noStatus)).toBe("pending");
+    expect(summarizeChecks([run("completed", "success"), run("completed", "failure")], noStatus)).toBe("failure");
+  });
+  it("外部 CI の commit status も見る", () => {
+    expect(summarizeChecks([run("completed", "success")], { state: "failure", total_count: 1 })).toBe("failure");
+    expect(summarizeChecks([], { state: "success", total_count: 1 })).toBe("success");
+  });
+  it("検査が1つもなければ成功とみなさない", () => {
+    expect(summarizeChecks([], noStatus)).toBe("pending");
+  });
+});
+
+describe("強制する保護パス", () => {
+  it("ルール文書と設定は、設定から外しても保護される", () => {
+    const paths = protectedPaths({ protected_paths: [] });
+    expect(matchProtected(["AGENTS.md", "pkg/CLAUDE.md", "docs/constitution.md", "taskrail.yml", "src/a.ts"], paths)).toEqual([
+      "AGENTS.md",
+      "pkg/CLAUDE.md",
+      "docs/constitution.md",
+      "taskrail.yml",
+    ]);
   });
 });

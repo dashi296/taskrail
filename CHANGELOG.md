@@ -17,4 +17,8 @@
 - 設定に `check_commands` を追加。プロンプトにルール文書の一覧、コマンド、保護パスを明記し、`docs/constitution.md` がなければ同梱の既定の原則を埋め込む
 - 呼び出し側のワークフローを薄くした。イベントからボード操作への振り分けは `board.yml` が行う
 - `doctor`: rulesets と Organization の Secrets を認識する。設定の出どころと `workflow_run` の CI 名を検査する
+- ルール文書(`CLAUDE.md`、`AGENTS.md`、`docs/constitution.md`)と `taskrail.yml` を、設定では外せない保護パスにした
+- CI が複数あるとき、ブランチの検査がすべて成功してから Verify に進める(`advance --require-checks`)
+- `init --ci`: `pull_request` で起動する CI だけを検出する。別名の入口ワークフローがあれば二重に置かない
+- `doctor`: ブランチ保護で、レビュー必須(承認1件以上)と App のバイパスを確認する。入口ワークフローが複数あれば検出する
 - 修正: Verify でテストを実行できず blocked になる問題。CI の成功を根拠に判定するよう、verify-spec のプロンプトを変更
