@@ -116,8 +116,8 @@ describe("プロジェクト設定の解決", () => {
     const p = loadProject(withFile('bot_logins: ["other[bot]"]\n'), { TASKRAIL_BOT_LOGIN: "my-taskrail[bot]" });
     expect(p.bot_logins).toEqual(["other[bot]"]);
   });
-  it("TASKRAIL_BOT_LOGIN が不正なら拒否する(空の [bot] や bot でない名前)", () => {
-    expect(() => loadProject(empty(), { TASKRAIL_BOT_LOGIN: "[bot]" })).toThrow();
-    expect(() => loadProject(empty(), { TASKRAIL_BOT_LOGIN: "alice" })).toThrow();
+  it("TASKRAIL_BOT_LOGIN がログイン名として不正なら拒否する(空白・区切り文字・ワイルドカード)", () => {
+    for (const bad of ["a b", "x,y", "a\nrun=true", "*"]) expect(() => loadProject(empty(), { TASKRAIL_BOT_LOGIN: bad })).toThrow();
+    expect(loadProject(empty(), { TASKRAIL_BOT_LOGIN: "gitlab.bot_1" }).bot_logins).toEqual(["gitlab.bot_1"]);
   });
 });

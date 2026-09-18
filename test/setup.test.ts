@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
-import { detectCiWorkflows, findEntryWorkflows, init, missingCiWorkflows } from "../src/commands/setup.js";
+import { analyzeCiWorkflows, detectCiWorkflows, findEntryWorkflows, init, missingCiWorkflows } from "../src/commands/setup.js";
 
 const repo = (workflows: Record<string, string> = {}) => {
   const d = mkdtempSync(join(tmpdir(), "taskrail-init-"));
@@ -24,6 +24,19 @@ describe("CI ワークフローの検出", () => {
     });
     expect(detectCiWorkflows(d)).toEqual(["CI", "Lint"]);
     expect(findEntryWorkflows(d)).toEqual([".github/workflows/entry.yaml"]);
+  });
+  it("pull_request の条件を解析し、既定ブランチ向けの PR の作成・更新で起動しないものを除く", () => {
+    const d = repo({
+      "a.yml": "name: A\non:\n  pull_request:\n    branches: [release]\njobs: {}\n",
+      "b.yml": "name: B\non:\n  pull_request:\n    types: [closed]\njobs: {}\n",
+      "c.yml": "name: C\non:\n  pull_request:\n    branches-ignore: ['ma*']\njobs: {}\n",
+      "d.yml": "name: D\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\n    branches: ['**']\njobs: {}\n",
+      "e.yml": "name: E\non:\n  pull_request:\n    paths: ['src/**']\njobs: {}\n",
+    });
+    expect(detectCiWorkflows(d, "main")).toEqual(["D", "E"]);
+    const all = analyzeCiWorkflows(d, "main");
+    expect(all.find((w) => w.name === "A")?.reason).toContain("release");
+    expect(all.find((w) => w.name === "E")?.pathFiltered).toBe(true);
   });
   it("name がなければファイルのパスを名前にする(GitHub と同じ)", () => {
     expect(detectCiWorkflows(repo({ "test.yml": "on: pull_request\njobs: {}\n" }))).toEqual([".github/workflows/test.yml"]);
@@ -83,6 +96,12 @@ describe("init", () => {
     const d = repo({ "taskrail.yaml": "on: issues\njobs:\n  r:\n    uses: acme/taskrail/.github/workflows/route.yml@v0\n" });
     run(d, { ci: true, force: true });
     expect(existsSync(join(d, ".github/workflows/taskrail.yml"))).toBe(false);
+  });
+  it("作業ブランチの接頭辞は設定に合わせる", () => {
+    const d = repo({ "ci.yml": "name: CI\non: pull_request\njobs: {}\n" });
+    writeFileSync(join(d, "taskrail.yml"), 'branch_prefix: "task-"\n');
+    run(d, { ci: true });
+    expect(readFileSync(join(d, ".github/workflows/taskrail.yml"), "utf8")).toContain("startsWith(github.event.workflow_run.head_branch, 'task-')");
   });
   it("CI が見つからなければ \"CI\" を入れる", () => {
     const d = repo();

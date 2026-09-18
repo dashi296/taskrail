@@ -5,7 +5,7 @@ import { parse } from "yaml";
 import { createPlatform } from "../adapters/index.js";
 import { checkFlow, loadFlow, loadProject, packageRoot, packageVersion, projectSource, ProjectSchema } from "../core/config.js";
 import { flowLabel } from "../core/flow.js";
-import { excludeTaskrailDir, tryGit } from "../core/git.js";
+import { excludeTaskrailDir, globToRegExp, tryGit } from "../core/git.js";
 import { readResult } from "../core/result.js";
 
 const REF_PATTERN = /(\/taskrail\/\.github\/workflows\/[a-z-]+\.yml@)([\w.-]+)/g;
@@ -52,7 +52,7 @@ export function init(opts: InitOptions): void {
     "{{TASKRAIL_REF}}": opts.ref,
     "{{PLATFORM}}": opts.platform,
     "{{CI_WORKFLOWS}}": JSON.stringify(ci.length ? ci : ["CI"]),
-    "{{BRANCH_PREFIX}}": ProjectSchema.parse({}).branch_prefix,
+    "{{BRANCH_PREFIX}}": branchPrefixFor(cwd),
   };
   const files: { dest: string; text: () => string }[] = [];
   const fromTemplate = (rel: string) => ({
@@ -86,6 +86,8 @@ export function init(opts: InitOptions): void {
   if (!files.length && !otherEntries.length) console.log("  リポジトリに置くファイルはありません(ローカル実行専用)");
   if (excludeTaskrailDir()) console.log("  除外  .taskrail/(.git/info/exclude に追記。.gitignore は変更しません)");
   if (opts.ci && opts.platform === "github" && !otherEntries.length) {
+    const filtered = analyzeCiWorkflows(cwd, localDefaultBranch()).filter((w) => w.runsOnPr && w.pathFiltered);
+    for (const w of filtered) console.log(`  ! ${w.name} は paths で絞り込まれています。変更したファイルによっては起動せず、Verify に進みません`);
     console.log(
       ci.length
         ? `\n  CI ワークフロー: ${ci.join(", ")}(成功したら In Progress → Verify に進めます)`
@@ -120,17 +122,24 @@ export function findEntryWorkflows(cwd: string): string[] {
     .map((f) => `.github/workflows/${f}`);
 }
 
-/**
- * 導入先の CI ワークフローの名前。workflow_run の対象になる。
- * 作業ブランチの PR で確実に動くものだけを選ぶため、pull_request で起動するものに限る
- * (push は branches で既定ブランチに絞られていることが多く、作業ブランチでは動かないことがある)。
- * workflow_run はワークフローの name で指定する。name がなければ GitHub はファイルのパスを名前にする。
- */
-export function detectCiWorkflows(cwd: string): string[] {
+/** CI ワークフローが、taskrail の作業ブランチの PR で起動するか。 */
+export interface CiWorkflow {
+  /** workflow_run で指定する名前。name がなければ GitHub はファイルのパスを名前にする。 */
+  name: string;
+  /** 既定ブランチ向けの PR の作成(opened)と更新(synchronize)の両方で起動する。 */
+  runsOnPr: boolean;
+  /** paths / paths-ignore で絞り込まれている(変更したファイルによっては起動しない)。 */
+  pathFiltered: boolean;
+  /** runsOnPr が false の理由。 */
+  reason?: string;
+}
+
+/** 導入先の CI ワークフロー(taskrail の入口を除く)を解析する。base は既定ブランチ。 */
+export function analyzeCiWorkflows(cwd: string, base: string): CiWorkflow[] {
   const dir = join(cwd, ".github", "workflows");
   if (!existsSync(dir)) return [];
   const entries = new Set(findEntryWorkflows(cwd));
-  const names: string[] = [];
+  const result: CiWorkflow[] = [];
   for (const file of readdirSync(dir).sort()) {
     if (!/\.ya?ml$/.test(file) || entries.has(`.github/workflows/${file}`)) continue;
     let wf: { name?: unknown; on?: unknown } | null;
@@ -139,20 +148,68 @@ export function detectCiWorkflows(cwd: string): string[] {
     } catch {
       continue;
     }
-    const on = wf?.on;
-    const events = typeof on === "string" ? [on] : Array.isArray(on) ? on : on && typeof on === "object" ? Object.keys(on) : [];
-    if (!events.includes("pull_request")) continue;
-    names.push(typeof wf?.name === "string" ? wf.name : `.github/workflows/${file}`);
+    const name = typeof wf?.name === "string" ? wf.name : `.github/workflows/${file}`;
+    result.push({ name, ...pullRequestTrigger(wf?.on, base) });
   }
-  return names;
+  return result;
+}
+
+/**
+ * workflow_run の対象にする CI の名前。作業ブランチの PR で確実に動くものだけを選ぶ
+ * (push は branches で既定ブランチに絞られていることが多く、作業ブランチでは動かないことがある)。
+ */
+export function detectCiWorkflows(cwd: string, base = localDefaultBranch()): string[] {
+  return analyzeCiWorkflows(cwd, base)
+    .filter((w) => w.runsOnPr)
+    .map((w) => w.name);
+}
+
+function pullRequestTrigger(on: unknown, base: string): Omit<CiWorkflow, "name"> {
+  const events = typeof on === "string" ? [on] : Array.isArray(on) ? on : on && typeof on === "object" ? Object.keys(on) : [];
+  if (!events.includes("pull_request")) return { runsOnPr: false, pathFiltered: false, reason: "pull_request で起動しません" };
+  const cfg = on && typeof on === "object" && !Array.isArray(on) ? (on as Record<string, unknown>).pull_request : null;
+  if (!cfg || typeof cfg !== "object") return { runsOnPr: true, pathFiltered: false };
+  const c = cfg as Record<string, unknown>;
+  const list = (v: unknown) => (typeof v === "string" ? [v] : Array.isArray(v) ? v.map(String) : null);
+  const pathFiltered = c.paths !== undefined || c["paths-ignore"] !== undefined;
+  const types = list(c.types);
+  if (types && !(types.includes("opened") && types.includes("synchronize"))) {
+    return { runsOnPr: false, pathFiltered, reason: `types(${types.join(", ")})に opened と synchronize の両方が含まれていません` };
+  }
+  const matches = (globs: string[]) => globs.some((g) => globToRegExp(g).test(base));
+  const branches = list(c.branches);
+  if (branches && !matches(branches)) return { runsOnPr: false, pathFiltered, reason: `branches(${branches.join(", ")})が ${base} を含みません` };
+  const ignored = list(c["branches-ignore"]);
+  if (ignored && matches(ignored)) return { runsOnPr: false, pathFiltered, reason: `branches-ignore が ${base} を除外しています` };
+  return { runsOnPr: true, pathFiltered };
+}
+
+/** 既定ブランチの名前(ネットワークに問い合わせない)。origin/HEAD がなければ main とみなす。 */
+function localDefaultBranch(): string {
+  return tryGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])?.replace(/^origin\//, "") ?? "main";
+}
+
+/** 呼び出し側ワークフローの workflow_run.workflows。 */
+function listedCiWorkflows(callerYaml: string): string[] {
+  const wf = parse(callerYaml) as { on?: { workflow_run?: { workflows?: unknown } } } | null;
+  const listed = wf?.on?.workflow_run?.workflows;
+  return Array.isArray(listed) ? listed.map(String) : [];
 }
 
 /** 呼び出し側ワークフローの workflow_run.workflows のうち、実在しない CI の名前。これが残ると doing → verify が動かない。 */
 export function missingCiWorkflows(callerYaml: string, existing: string[]): string[] {
-  const wf = parse(callerYaml) as { on?: { workflow_run?: { workflows?: unknown } } } | null;
-  const listed = wf?.on?.workflow_run?.workflows;
-  if (!Array.isArray(listed)) return ["(workflow_run.workflows がありません)"];
-  return listed.map(String).filter((n) => !existing.includes(n));
+  const listed = listedCiWorkflows(callerYaml);
+  if (!listed.length) return ["(workflow_run.workflows がありません)"];
+  return listed.filter((n) => !existing.includes(n));
+}
+
+/** 呼び出し側ワークフローに埋め込む作業ブランチの接頭辞。設定(taskrail.yml / TASKRAIL_CONFIG)があればそれに合わせる。 */
+function branchPrefixFor(cwd: string): string {
+  try {
+    return loadProject(cwd).branch_prefix;
+  } catch {
+    return ProjectSchema.parse({}).branch_prefix;
+  }
 }
 
 /** --docs で置く docs/constitution.md。同梱の既定の原則に、固有の原則を書く欄を足す。 */
@@ -250,7 +307,9 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
     add("設定", false, (e as Error).message);
   }
   add(
-    project.bot_logins.length ? `bot_logins(${project.bot_logins.join(", ")})` : "bot_logins(Actions では App から自動で決まります)",
+    project.bot_logins.length
+      ? `bot_logins(${project.bot_logins.join(", ")})`
+      : "bot_logins(Actions では App から自動で決まります。ローカル実行では gh のログインユーザーの記録だけを信頼します)",
     true,
   );
 
@@ -273,12 +332,18 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
       prefixes.every((p) => p === project.branch_prefix),
       `${wf} の startsWith(..., '${prefixes.find((p) => p !== project.branch_prefix)}') を、設定の branch_prefix に合わせてください`,
     );
-    const missing = missingCiWorkflows(text, detectCiWorkflows(cwd));
+    const workflows = analyzeCiWorkflows(cwd, localDefaultBranch());
+    const missing = missingCiWorkflows(text, workflows.map((w) => w.name));
     add(
       "CI ワークフローの参照(workflow_run)",
       missing.length === 0,
       `見つからない CI: ${missing.join(", ")}。${wf} の workflow_run.workflows を、実在する CI の name に直してください`,
     );
+    const listed = listedCiWorkflows(text);
+    for (const w of workflows.filter((x) => listed.includes(x.name))) {
+      if (!w.runsOnPr) add(`CI「${w.name}」`, "warn", `作業ブランチの PR で起動しない可能性があります(${w.reason})。起動しないと Verify に進みません`);
+      else if (w.pathFiltered) add(`CI「${w.name}」`, "warn", "paths で絞り込まれています。変更したファイルによっては起動せず、Verify に進みません");
+    }
   }
   add("git リポジトリ", tryGit(["rev-parse", "--git-dir"]) !== null);
 
@@ -349,6 +414,8 @@ export interface ProtectionFacts {
   rules: { type: string; approvals: number }[];
   /** ruleset のバイパス対象のうち、GitHub App(Integration)の ID。 */
   rulesetBypassApps: number[];
+  /** バイパス設定を確認できなかった ruleset の ID(権限不足では bypass_actors が返らない)。 */
+  rulesetBypassUnknown: number[];
   /** プランの制約でブランチ保護を使えない。 */
   unavailable: boolean;
 }
@@ -376,6 +443,12 @@ export function branchProtection(p: ProtectionFacts, botLogins: string[] = []): 
   const bypassing = p.classic?.bypassApps ?? [];
   if (bypassing.some((a) => slugs.includes(a))) {
     return { ok: false, hint: `taskrail の App(${bypassing.filter((a) => slugs.includes(a)).join(", ")})がレビューをバイパスできます。バイパスの対象から外してください` };
+  }
+  if (p.rulesetBypassUnknown.length) {
+    return {
+      ok: "warn",
+      hint: `ruleset(ID ${p.rulesetBypassUnknown.join(", ")})のバイパス設定を確認できません。ruleset の管理権限を持つ人が doctor を実行するか、taskrail の App がバイパス対象に含まれていないことを確認してください`,
+    };
   }
   if (bypassing.length || p.rulesetBypassApps.length) {
     const who = [...bypassing, ...p.rulesetBypassApps.map((id) => `App ID ${id}`)].join(", ");
@@ -408,9 +481,14 @@ export function protectionFacts(
     ? json<{ type: string; ruleset_id?: number; parameters?: { required_approving_review_count?: number } }[]>(rules.out, [])
     : [];
   const rulesetIds = [...new Set(ruleList.map((r) => r.ruleset_id).filter((id): id is number => typeof id === "number"))];
+  const unknown: number[] = [];
   const bypass = rulesetIds.flatMap((id) => {
     const r = json<{ bypass_actors?: { actor_id: number | null; actor_type: string }[] }>(getRuleset(id) ?? "", {});
-    return (r.bypass_actors ?? []).filter((a) => a.actor_type === "Integration" && a.actor_id !== null).map((a) => a.actor_id as number);
+    if (!Array.isArray(r.bypass_actors)) {
+      unknown.push(id);
+      return [];
+    }
+    return r.bypass_actors.filter((a) => a.actor_type === "Integration" && a.actor_id !== null).map((a) => a.actor_id as number);
   });
   return {
     classic: c
@@ -421,6 +499,7 @@ export function protectionFacts(
       : null,
     rules: ruleList.map((r) => ({ type: r.type, approvals: r.parameters?.required_approving_review_count ?? 0 })),
     rulesetBypassApps: [...new Set(bypass)],
+    rulesetBypassUnknown: unknown,
     unavailable: [classic.err, rules.err].some((e) => /Upgrade to GitHub Pro|make this repository public/i.test(e)),
   };
 }

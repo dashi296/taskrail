@@ -31,10 +31,19 @@ if [ -z "$stage" ]; then
 fi
 
 # Actions と同じ設定で動かすため、リポジトリ変数 TASKRAIL_CONFIG があれば読む(taskrail.yml があればそちらが優先)。
+# 変数の一覧を取得できないとき(権限不足など)は、Actions と違う設定で動くことになるので警告する。
 if [ -z "${TASKRAIL_CONFIG:-}" ]; then
-  TASKRAIL_CONFIG="$(gh variable get TASKRAIL_CONFIG 2>/dev/null || true)"
-  export TASKRAIL_CONFIG
+  if ! vars="$(gh variable list --json name --jq '.[].name' 2>/dev/null)"; then
+    echo "[local-run] 警告: リポジトリ変数を取得できません。TASKRAIL_CONFIG を読まずに、既定値(と taskrail.yml)で動かします" >&2
+  elif grep -qx TASKRAIL_CONFIG <<<"$vars"; then
+    TASKRAIL_CONFIG="$(gh variable get TASKRAIL_CONFIG)"
+    export TASKRAIL_CONFIG
+  fi
 fi
+
+# ローカルでは記録(実行記録・仕様・計画)を gh のログインユーザー名義で書く。その人の記録だけを信頼する。
+TASKRAIL_RECORD_AUTHOR="$(gh api user --jq .login)" || die "gh のログインユーザーを取得できません(gh auth login を確認してください)"
+export TASKRAIL_RECORD_AUTHOR
 
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT

@@ -75,10 +75,25 @@ export const ProjectSchema = z
 export type Project = z.infer<typeof ProjectSchema>;
 
 /**
- * 設定では外せない保護パス。エージェントが従うルール文書と taskrail の設定。
- * これらを作業ブランチで書き換えられると、後続の工程(検証など)が改変された指示を読んでしまう。
+ * 設定では外せない保護パス。作業ブランチで書き換えられると、後続の工程やCIが改変された内容で動いてしまうもの。
+ * - ルール文書: 後続の工程(検証など)が改変された指示を読む
+ * - エージェントの設定(.claude/、.mcp.json): hook や MCP サーバーとして、後続の工程で任意のコマンドが実行される
+ * - CI の定義: 作業ブランチの PR で、リポジトリの Secrets を持って実行される
+ * - taskrail の設定
  */
-export const ENFORCED_PROTECTED_PATHS = ["taskrail.yml", "**/CLAUDE.md", "**/AGENTS.md", "docs/constitution.md"];
+export const ENFORCED_PROTECTED_PATHS = [
+  "taskrail.yml",
+  "**/CLAUDE.md",
+  "**/CLAUDE.local.md",
+  "**/AGENTS.md",
+  "docs/constitution.md",
+  ".claude/**",
+  ".mcp.json",
+  ".github/workflows/**",
+  ".github/actions/**",
+  ".gitlab-ci.yml",
+  ".gitlab/ci/**",
+];
 
 /** 実際に強制する保護パス(設定 + 強制分)。 */
 export function protectedPaths(project: Pick<Project, "protected_paths">): string[] {
@@ -115,14 +130,19 @@ export function loadProject(cwd = process.cwd(), env: NodeJS.ProcessEnv = proces
   const project = parsed.data;
   const bot = env.TASKRAIL_BOT_LOGIN?.trim();
   if (!project.bot_logins.length && bot) {
-    if (!BOT_LOGIN.test(bot)) throw new Error(`TASKRAIL_BOT_LOGIN が GitHub のログイン名として不正です: ${bot}`);
+    if (!isLogin(bot)) throw new Error(`TASKRAIL_BOT_LOGIN がログイン名として不正です: ${bot}`);
     project.bot_logins = [bot];
   }
   return project;
 }
 
-/** GitHub App のログイン名(例: my-taskrail[bot])。 */
-const BOT_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$/;
+/**
+ * ログイン名として使える文字列か。プラットフォームごとの細かな規則(GitHub App の `[bot]` など)は問わず、
+ * 空白・区切り文字・制御文字を含まないことだけを見る(step output や一覧への混入を防ぐ)。
+ */
+export function isLogin(s: string): boolean {
+  return /^[^\s,*]{1,100}$/.test(s);
+}
 
 /** 設定の出どころ。doctor の表示用。 */
 export function projectSource(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): string[] {
