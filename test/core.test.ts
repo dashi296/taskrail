@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Comment } from "../src/adapters/types.js";
 import { dependencies } from "../src/commands/board.js";
 import { allowedBots } from "../src/commands/route.js";
+import { branchProtection } from "../src/commands/setup.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
 import { branchName, globToRegExp, issueFromBranch, matchProtected, slugify } from "../src/core/git.js";
 import { buildPrompt } from "../src/core/prompt.js";
@@ -148,5 +149,22 @@ describe("allowed_bots の出力", () => {
   });
   it("不正な値(改行・ワイルドカード)を捨てる", () => {
     expect(allowedBots(["ok[bot]", "a\nrun=true", "*", "x,y"])).toBe("ok[bot]");
+  });
+});
+
+describe("doctor: ブランチ保護の判定", () => {
+  it("classic な保護があれば合格", () => {
+    expect(branchProtection({ classic: true, ruleTypes: [], unavailable: false }).ok).toBe(true);
+  });
+  it("PR を必須にする ruleset があれば合格", () => {
+    expect(branchProtection({ classic: false, ruleTypes: ["deletion", "pull_request"], unavailable: false }).ok).toBe(true);
+  });
+  it("PR 必須でない ruleset だけなら不合格", () => {
+    expect(branchProtection({ classic: false, ruleTypes: ["deletion", "non_fast_forward"], unavailable: false }).ok).toBe(false);
+  });
+  it("プランの制約で使えないときも不合格のまま、ヒントで理由を示す", () => {
+    const r = branchProtection({ classic: false, ruleTypes: [], unavailable: true });
+    expect(r.ok).toBe(false);
+    expect(r.hint).toContain("public");
   });
 });
