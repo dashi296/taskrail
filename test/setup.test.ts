@@ -55,6 +55,7 @@ describe("init", () => {
     expect(wf).toContain("acme/taskrail/.github/workflows/route.yml@v1");
     expect((parse(wf) as { on: { workflow_run: { workflows: string[] } } }).on.workflow_run.workflows).toEqual(["Build"]);
     for (const f of ["taskrail.yml", "CLAUDE.md", "docs", ".github/ISSUE_TEMPLATE"]) expect(existsSync(join(d, f))).toBe(false);
+    expect(wf).toContain("startsWith(github.event.workflow_run.head_branch, 'issue-')");
   });
   it("フラグで任意のファイルを置く", () => {
     const d = repo();

@@ -47,6 +47,7 @@ export function init(opts: InitOptions): void {
     "{{TASKRAIL_REF}}": opts.ref,
     "{{PLATFORM}}": opts.platform,
     "{{CI_WORKFLOWS}}": JSON.stringify(ci.length ? ci : ["CI"]),
+    "{{BRANCH_PREFIX}}": ProjectSchema.parse({}).branch_prefix,
   };
   const files: { dest: string; text: () => string }[] = [];
   const fromTemplate = (rel: string) => ({
@@ -228,6 +229,12 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
     const text = readFileSync(join(cwd, wf), "utf8");
     const refs = [...text.matchAll(REF_PATTERN)].map((m) => m[2]);
     add(`参照バージョンの固定(${refs[0] ?? "?"})`, refs.length > 0 && !refs.includes("main") ? true : "warn", "main ではなくタグ(v1 など)を参照してください");
+    const prefixes = [...text.matchAll(/startsWith\([^,]+,\s*'([^']*)'\)/g)].map((m) => m[1]);
+    add(
+      `作業ブランチの接頭辞(${project.branch_prefix})`,
+      prefixes.every((p) => p === project.branch_prefix),
+      `${wf} の startsWith(..., '${prefixes.find((p) => p !== project.branch_prefix)}') を、設定の branch_prefix に合わせてください`,
+    );
     const missing = missingCiWorkflows(text, detectCiWorkflows(cwd));
     add(
       "CI ワークフローの参照(workflow_run)",

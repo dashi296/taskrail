@@ -35,13 +35,17 @@ jobs:
     secrets: inherit
 
   # AIを使わないボード操作(着手、CI成功・修正依頼・マージの反映、回答での再開)。振り分けは board.yml が行う。
+  # 無関係な CI や PR でジョブを起動しないよう、作業ブランチ(接頭辞 {{BRANCH_PREFIX}})だけを対象にする。
   board:
     if: >-
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested') ||
-      (github.event_name == 'pull_request' && github.event.pull_request.merged)
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+        startsWith(github.event.workflow_run.head_branch, '{{BRANCH_PREFIX}}')) ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' &&
+        startsWith(github.event.pull_request.head.ref, '{{BRANCH_PREFIX}}')) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged &&
+        startsWith(github.event.pull_request.head.ref, '{{BRANCH_PREFIX}}'))
     uses: {{TASKRAIL_OWNER}}/taskrail/.github/workflows/board.yml@{{TASKRAIL_REF}}
     with:
       taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
