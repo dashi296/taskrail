@@ -1,5 +1,8 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkFlow, loadFlow, ProjectSchema } from "../src/core/config.js";
+import { checkFlow, loadFlow, loadProject, ProjectSchema } from "../src/core/config.js";
 import { canTransition, currentStage, decide, getStage, sizeOf, stageFromLabel } from "../src/core/flow.js";
 
 const flow = loadFlow();
@@ -75,5 +78,46 @@ describe("decide", () => {
   it("ルール違反は、status が pass でも止める", () => {
     const d = decide(project, { ...base, stage: getStage(flow, "verify"), status: "pass", violation: "保護対象の変更" });
     expect(d).toMatchObject({ to: null, addBlocked: true });
+  });
+});
+
+describe("プロジェクト設定の解決", () => {
+  const empty = () => mkdtempSync(join(tmpdir(), "taskrail-cfg-"));
+  const withFile = (yaml: string) => {
+    const d = empty();
+    writeFileSync(join(d, "taskrail.yml"), yaml);
+    return d;
+  };
+
+  it("ファイルも環境変数もなければ既定値", () => {
+    const p = loadProject(empty(), {});
+    expect(p.wip_limit).toBe(2);
+    expect(p.bot_logins).toEqual([]);
+    expect(p.check_commands).toEqual([]);
+  });
+  it("TASKRAIL_CONFIG(YAML)を読む", () => {
+    const p = loadProject(empty(), { TASKRAIL_CONFIG: "wip_limit: 5\ncheck_commands: [npm test]" });
+    expect(p.wip_limit).toBe(5);
+    expect(p.check_commands).toEqual(["npm test"]);
+  });
+  it("taskrail.yml は TASKRAIL_CONFIG をキーごとに上書きする", () => {
+    const p = loadProject(withFile("wip_limit: 1\n"), { TASKRAIL_CONFIG: "wip_limit: 5\nmax_rework: 7" });
+    expect(p.wip_limit).toBe(1);
+    expect(p.max_rework).toBe(7);
+  });
+  it("不正な設定を拒否する", () => {
+    expect(() => loadProject(empty(), { TASKRAIL_CONFIG: "unknown_key: 1" })).toThrow();
+    expect(() => loadProject(empty(), { TASKRAIL_CONFIG: "- a\n- b" })).toThrow(/マッピング/);
+  });
+  it("bot_logins が空なら TASKRAIL_BOT_LOGIN を使う", () => {
+    expect(loadProject(empty(), { TASKRAIL_BOT_LOGIN: "my-taskrail[bot]" }).bot_logins).toEqual(["my-taskrail[bot]"]);
+  });
+  it("bot_logins が設定済みなら TASKRAIL_BOT_LOGIN で上書きしない", () => {
+    const p = loadProject(withFile('bot_logins: ["other[bot]"]\n'), { TASKRAIL_BOT_LOGIN: "my-taskrail[bot]" });
+    expect(p.bot_logins).toEqual(["other[bot]"]);
+  });
+  it("TASKRAIL_BOT_LOGIN が不正なら拒否する(空の [bot] や bot でない名前)", () => {
+    expect(() => loadProject(empty(), { TASKRAIL_BOT_LOGIN: "[bot]" })).toThrow();
+    expect(() => loadProject(empty(), { TASKRAIL_BOT_LOGIN: "alice" })).toThrow();
   });
 });

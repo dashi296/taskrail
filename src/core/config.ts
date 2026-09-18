@@ -67,6 +67,8 @@ export const ProjectSchema = z
       .default([".github/**", ".gitlab-ci.yml", "taskrail.yml", "**/migrations/**", "**/.env*"]),
     /** 作業ブランチの接頭辞。ブランチ名は `<prefix><issue番号>-<slug>`。 */
     branch_prefix: z.string().default("issue-"),
+    /** エージェントが完了前に通すコマンド(lint・型チェック・テスト)。空ならリポジトリの文書から判断させる。 */
+    check_commands: z.array(z.string()).default([]),
   })
   .strict();
 
@@ -84,10 +86,39 @@ export function loadFlow(path?: string): Flow {
   return flow;
 }
 
-export function loadProject(cwd = process.cwd()): Project {
+/**
+ * プロジェクト設定を解決する。導入先のリポジトリにファイルを置かなくても動くよう、次の順に上書きする。
+ *   既定値 < 環境変数 TASKRAIL_CONFIG(YAML。リポジトリ変数から渡す) < taskrail.yml
+ * bot_logins が空なら、環境変数 TASKRAIL_BOT_LOGIN(ワークフローが App から決める)を使う。
+ */
+export function loadProject(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): Project {
+  const fromEnv = env.TASKRAIL_CONFIG?.trim() ? asObject(parse(env.TASKRAIL_CONFIG), "TASKRAIL_CONFIG") : {};
   const file = join(cwd, "taskrail.yml");
-  if (!existsSync(file)) return ProjectSchema.parse({});
-  return ProjectSchema.parse(readYaml(file) ?? {});
+  const fromFile = existsSync(file) ? asObject(readYaml(file), "taskrail.yml") : {};
+  const project = ProjectSchema.parse({ ...fromEnv, ...fromFile });
+  const bot = env.TASKRAIL_BOT_LOGIN?.trim();
+  if (!project.bot_logins.length && bot) {
+    if (!BOT_LOGIN.test(bot)) throw new Error(`TASKRAIL_BOT_LOGIN が GitHub のログイン名として不正です: ${bot}`);
+    project.bot_logins = [bot];
+  }
+  return project;
+}
+
+/** GitHub App のログイン名(例: my-taskrail[bot])。 */
+const BOT_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$/;
+
+/** 設定の出どころ。doctor の表示用。 */
+export function projectSource(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): string[] {
+  return [
+    ...(existsSync(join(cwd, "taskrail.yml")) ? ["taskrail.yml"] : []),
+    ...(env.TASKRAIL_CONFIG?.trim() ? ["TASKRAIL_CONFIG"] : []),
+  ];
+}
+
+function asObject(value: unknown, name: string): Record<string, unknown> {
+  if (value == null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} は YAML のマッピングで書いてください`);
+  return value as Record<string, unknown>;
 }
 
 /** スキーマでは表せない整合性の検査。 */
