@@ -71,7 +71,8 @@ export function dirtyFiles(cwd = process.cwd()): string[] {
 }
 
 export function changedFilesSince(base: string, cwd = process.cwd()): string[] {
-  const out = tryGit(["diff", "--name-only", `${base}...HEAD`], cwd) ?? "";
+  // --no-renames: 名前の変更を「削除 + 追加」として両方のパスを出す。保護対象を移動・改名して検査を逃れるのを防ぐ。
+  const out = tryGit(["diff", "--name-only", "--no-renames", `${base}...HEAD`], cwd) ?? "";
   return out.split("\n").filter((l) => l.trim());
 }
 

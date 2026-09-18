@@ -15,6 +15,17 @@ export interface RunRecord {
   blocked: boolean;
   version: string;
   at: string;
+  /** 実装工程が PR を出したときの作業ブランチ。CI の結果で次の列へ進めるときに使う。 */
+  branch?: string;
+}
+
+/**
+ * 直近の記録が「stageId の工程が pass し、作業ブランチを残した」ものなら、そのブランチを返す。
+ * 差し戻し直後(直近が検証の fail など)は null。古いコミットの検査結果で先へ進めないための確認。
+ */
+export function implementedBranch(runs: RunRecord[], stageId: string): string | null {
+  const last = runs[runs.length - 1];
+  return last && last.stage === stageId && last.status === "pass" && last.branch ? last.branch : null;
 }
 
 export function runMarker(rec: RunRecord): string {

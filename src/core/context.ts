@@ -1,7 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { createPlatform, type Platform } from "../adapters/index.js";
 import type { Issue } from "../adapters/types.js";
-import { type Flow, type Project, loadFlow, loadProject } from "./config.js";
+import { type Flow, type Project, isLogin, loadFlow, loadProject } from "./config.js";
 import { flowLabel, isFlowLabel } from "./flow.js";
 
 export interface Ctx {
@@ -41,8 +41,15 @@ export function moveTo(ctx: Ctx, issue: Issue, stageId: string): void {
   ctx.platform.addLabels(issue.number, [target]);
 }
 
-export function trustedAuthors(project: Project): Set<string> | undefined {
-  return project.bot_logins.length ? new Set(project.bot_logins) : undefined;
+/**
+ * Issue コメント内の記録(実行記録・仕様・計画)を信頼する投稿者。
+ * taskrail の bot に加え、ローカル実行では記録を書く本人(TASKRAIL_RECORD_AUTHOR)。
+ * 誰もいなければ空集合を返し、どの記録も信頼しない(投稿者を検査しない状態にはしない)。
+ */
+export function trustedAuthors(project: Project, env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const author = env.TASKRAIL_RECORD_AUTHOR?.trim();
+  if (author && !isLogin(author)) throw new Error(`TASKRAIL_RECORD_AUTHOR がログイン名として不正です: ${author}`);
+  return new Set([...project.bot_logins, ...(author ? [author] : [])]);
 }
 
 export function log(msg: string): void {

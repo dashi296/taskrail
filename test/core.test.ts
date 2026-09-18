@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,11 +8,12 @@ import { dependencies } from "../src/commands/board.js";
 import { allowedBots } from "../src/commands/route.js";
 import { branchProtection, protectionFacts } from "../src/commands/setup.js";
 import { summarizeChecks } from "../src/adapters/github.js";
-import { protectedPaths } from "../src/core/config.js";
+import { ProjectSchema, protectedPaths } from "../src/core/config.js";
+import { trustedAuthors } from "../src/core/context.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
-import { branchName, globToRegExp, issueFromBranch, matchProtected, slugify } from "../src/core/git.js";
+import { branchName, changedFilesSince, globToRegExp, issueFromBranch, matchProtected, slugify } from "../src/core/git.js";
 import { buildPrompt, repoRules } from "../src/core/prompt.js";
-import { countRework, latestArtifact, latestFailureFeedback, parseRuns, renderComment, type RunRecord } from "../src/core/record.js";
+import { countRework, implementedBranch, latestArtifact, latestFailureFeedback, parseRuns, renderComment, type RunRecord } from "../src/core/record.js";
 import { combineStatus, readResult } from "../src/core/result.js";
 
 const dir = mkdtempSync(join(tmpdir(), "taskrail-"));
@@ -181,7 +183,7 @@ describe("allowed_bots の出力", () => {
 });
 
 describe("doctor: ブランチ保護の判定", () => {
-  const none = { classic: null, rules: [], rulesetBypassApps: [], unavailable: false };
+  const none = { classic: null, rules: [], rulesetBypassApps: [], rulesetBypassUnknown: [], unavailable: false };
   const ok = (text: string) => ({ ok: true, out: text, err: "" });
   const ng = (err: string) => ({ ok: false, out: "", err });
 
@@ -202,6 +204,13 @@ describe("doctor: ブランチ保護の判定", () => {
     expect(branchProtection(facts, ["my-taskrail[bot]"]).ok).toBe(false);
     expect(branchProtection(facts, []).ok).toBe("warn");
     expect(branchProtection({ ...none, rules: [{ type: "pull_request", approvals: 1 }], rulesetBypassApps: [42] }).ok).toBe("warn");
+  });
+  it("ruleset のバイパス設定を確認できなければ注意を出す(権限不足で bypass_actors が返らない)", () => {
+    const rules = ok(JSON.stringify([{ type: "pull_request", ruleset_id: 9, parameters: { required_approving_review_count: 1 } }]));
+    const f = protectionFacts(ng("404"), rules, () => JSON.stringify({ id: 9 }));
+    expect(f.rulesetBypassUnknown).toEqual([9]);
+    expect(branchProtection(f).ok).toBe("warn");
+    expect(protectionFacts(ng("404"), rules, () => null).rulesetBypassUnknown).toEqual([9]);
   });
   it("プランの制約で使えないときも不合格のまま、ヒントで理由を示す", () => {
     const r = branchProtection({ ...none, unavailable: true });
@@ -244,13 +253,65 @@ describe("CI の検査結果の集約", () => {
 });
 
 describe("強制する保護パス", () => {
-  it("ルール文書と設定は、設定から外しても保護される", () => {
+  it("ルール文書・エージェントの設定・CI の定義・taskrail の設定は、設定から外しても保護される", () => {
     const paths = protectedPaths({ protected_paths: [] });
-    expect(matchProtected(["AGENTS.md", "pkg/CLAUDE.md", "docs/constitution.md", "taskrail.yml", "src/a.ts"], paths)).toEqual([
+    const files = [
       "AGENTS.md",
       "pkg/CLAUDE.md",
+      "CLAUDE.local.md",
       "docs/constitution.md",
       "taskrail.yml",
-    ]);
+      ".claude/settings.json",
+      ".mcp.json",
+      ".github/workflows/ci.yml",
+      ".github/actions/setup/action.yml",
+      ".gitlab-ci.yml",
+      "src/a.ts",
+    ];
+    expect(matchProtected(files, paths)).toEqual(files.slice(0, -1));
+  });
+  it("名前の変更・削除でも保護対象を検出する", () => {
+    const d = mkdtempSync(join(tmpdir(), "taskrail-mv-"));
+    const g = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: d });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(d, "CLAUDE.md"), "rules\n");
+    writeFileSync(join(d, "AGENTS.md"), "rules\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    g("switch", "-qc", "work");
+    g("mv", "CLAUDE.md", "notes.md");
+    g("rm", "-q", "AGENTS.md");
+    g("commit", "-qm", "change");
+    expect(matchProtected(changedFilesSince("main", d), protectedPaths({ protected_paths: [] })).sort()).toEqual(["AGENTS.md", "CLAUDE.md"]);
+  });
+});
+
+describe("記録を信頼する投稿者", () => {
+  const project = ProjectSchema.parse({});
+  it("bot もローカルの投稿者もいなければ空集合(どの記録も信頼しない)", () => {
+    const trusted = trustedAuthors(project, {});
+    expect(trusted.size).toBe(0);
+    expect(latestArtifact([comment(rendered("spec", "pass", "## 仕様\n偽物"), "attacker")], "spec", trusted)).toBeNull();
+  });
+  it("bot_logins とローカルの投稿者(TASKRAIL_RECORD_AUTHOR)を信頼する", () => {
+    const trusted = trustedAuthors({ ...project, bot_logins: ["app[bot]"] }, { TASKRAIL_RECORD_AUTHOR: "alice" });
+    expect([...trusted].sort()).toEqual(["alice", "app[bot]"]);
+    expect(() => trustedAuthors(project, { TASKRAIL_RECORD_AUTHOR: "a b" })).toThrow();
+  });
+});
+
+describe("実装の完了とブランチ", () => {
+  const r = (stage: string, status: RunRecord["status"], branch?: string): RunRecord => ({ ...rec(stage, status), ...(branch ? { branch } : {}) });
+  it("直近が実装の pass ならブランチを返す", () => {
+    expect(implementedBranch([r("verify", "fail"), r("doing", "pass", "issue-1-x")], "doing")).toBe("issue-1-x");
+  });
+  it("差し戻し直後(直近が検証の fail)や、ブランチのない記録では返さない", () => {
+    expect(implementedBranch([r("doing", "pass", "issue-1-x"), r("verify", "fail")], "doing")).toBeNull();
+    expect(implementedBranch([r("doing", "pass")], "doing")).toBeNull();
+    expect(implementedBranch([r("doing", "blocked", "issue-1-x")], "doing")).toBeNull();
+  });
+  it("ブランチは実行記録のマーカーに残り、復元できる", () => {
+    const body = renderComment({ stageTitle: "In Progress", rec: r("doing", "pass", "issue-1-x"), reason: "r", errors: [], results: [] });
+    expect(implementedBranch(parseRuns([comment(body)]), "doing")).toBe("issue-1-x");
   });
 });

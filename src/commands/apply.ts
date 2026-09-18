@@ -72,6 +72,7 @@ export function apply(opts: ApplyOptions): void {
     blocked: decision.addBlocked,
     version: packageVersion(),
     at: new Date().toISOString(),
+    ...(prUrl ? { branch: git(["rev-parse", "--abbrev-ref", "HEAD"]) } : {}),
   };
   // 違反があった実行の成果物は、次工程に引き継がせない。
   const shown = violation ? results.map(({ artifact: _dropped, ...r }) => r) : results;

@@ -51,7 +51,8 @@ docs/                 設計・安全性・GitLab 対応の文書、利用者向
 
 1. このリポジトリを `<your-org>/taskrail` として作成し、`v0` タグを打つ。
 2. GitHub App を作成する。
-   - 権限: Contents (Read & write)、Issues (Read & write)、Pull requests (Read & write)、Metadata (Read)
+   - 権限: Contents (Read & write)、Issues (Read & write)、Pull requests (Read & write)、Checks (Read)、Commit statuses (Read)、Metadata (Read)
+   - Checks と Commit statuses は、作業ブランチの CI がすべて成功したかを確認するために使います。
    - 導入先のリポジトリと、`taskrail` リポジトリにインストールする。
    - `GITHUB_TOKEN` で付けたラベルは次のワークフローを起動しないため、App が必須です。
 3. `taskrail` リポジトリが private の場合、Settings → Actions → General → Access で、
@@ -76,7 +77,7 @@ taskrail init --owner <your-org> --ref v0 --ci     # CI(GitHub Actions)で自動
 
 ラベルの変更で自動的にエージェントを動かすには、`--ci` で `.github/workflows/taskrail.yml` を置きます。GitHub Actions はリポジトリにコミットされたワークフローしか起動しないため、自動実行にはこの1ファイルが必要です。
 `workflow_run` が対象にする CI の名前は、既存の CI ワークフローのうち `pull_request` で起動するものから自動で入ります。
-CI が複数あっても、作業ブランチの検査がすべて成功してから Verify に進みます。
+CI が複数あっても、作業ブランチの検査がすべて成功してから Verify に進みます。外部 CI などが後から完了した場合も、定期実行(10分ごと)で拾います。
 
 必要なものだけ追加で置けます。
 
@@ -113,7 +114,7 @@ protected_paths: [".github/**", "taskrail.yml", "CODEOWNERS", "db/migrations/**"
 wip_limit: 2
 ```
 
-`protected_paths` に何を書いても、ルール文書(`**/CLAUDE.md`、`**/AGENTS.md`、`docs/constitution.md`)と `taskrail.yml` は常に保護されます。
+`protected_paths` に何を書いても、ルール文書(`**/CLAUDE.md`、`**/CLAUDE.local.md`、`**/AGENTS.md`、`docs/constitution.md`)、エージェントの設定(`.claude/**`、`.mcp.json`)、CI の定義(`.github/workflows/**`、`.github/actions/**`、`.gitlab-ci.yml`、`.gitlab/ci/**`)、`taskrail.yml` は常に保護されます。
 `bot_logins`(Issue コメント内の記録を信頼する投稿者)は、Actions では GitHub App から自動で決まります。
 設定をリポジトリ変数に置くと、変更は PR レビューを通りません。レビューで管理したい場合は `--config` で `taskrail.yml` を置きます。
 
