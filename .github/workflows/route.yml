@@ -20,6 +20,10 @@ on:
         description: キルスイッチ。"false" で何もしない
         type: string
         default: "true"
+      config:
+        description: taskrail の設定(YAML)。リポジトリ変数 TASKRAIL_CONFIG を渡す
+        type: string
+        default: ""
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -83,7 +87,7 @@ jobs:
         id: route
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          TASKRAIL_CONFIG: ${{ vars.TASKRAIL_CONFIG }}
+          TASKRAIL_CONFIG: ${{ inputs.config }}
           TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
         run: $TASKRAIL route --event "$GITHUB_EVENT_PATH"
 
@@ -129,6 +133,6 @@ jobs:
         if: always() && steps.route.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          TASKRAIL_CONFIG: ${{ vars.TASKRAIL_CONFIG }}
+          TASKRAIL_CONFIG: ${{ inputs.config }}
           TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
         run: $TASKRAIL apply --issue "${{ steps.route.outputs.issue }}" --stage "${{ steps.route.outputs.stage }}"

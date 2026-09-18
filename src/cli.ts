@@ -19,11 +19,14 @@ const common = (c: Command) =>
 // --- 導入と保守(人間が手元で使う) ---
 program
   .command("init")
-  .description("このリポジトリに taskrail を導入する(薄いワークフローと雛形を配置)")
+  .description("このリポジトリに taskrail を導入する(既定ではワークフロー1つだけを配置)")
   .option("--platform <name>", "github | gitlab", "github")
   .requiredOption("--owner <org>", "taskrail リポジトリを置いている Organization / ユーザー名")
   .option("--ref <tag>", "参照する taskrail のタグ", "v0")
   .option("--labels", "続けてラベルも同期する")
+  .option("--docs", "docs/constitution.md(判断の原則)を置く。置かなければ同梱の既定の原則を使う")
+  .option("--issue-template", "起票フォームを置く")
+  .option("--config", "taskrail.yml を置く。置かなければ既定値とリポジトリ変数 TASKRAIL_CONFIG を使う")
   .option("--force", "既存ファイルを上書きする")
   .action(init);
 

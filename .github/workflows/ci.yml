@@ -22,7 +22,13 @@ jobs:
       - run: npm run check
       - name: init のスモークテスト
         run: |
-          mkdir "$RUNNER_TEMP/target" && cd "$RUNNER_TEMP/target" && git init -q
+          mkdir -p "$RUNNER_TEMP/target/.github/workflows" && cd "$RUNNER_TEMP/target" && git init -q
+          printf 'name: CI\non: pull_request\njobs: {}\n' > .github/workflows/ci.yml
+          git add -A && git -c user.name=ci -c user.email=ci@example.com commit -qm base
           node "$GITHUB_WORKSPACE/dist/cli.js" init --owner example --ref v0
+          test "$(git status --porcelain | wc -l)" -eq 1   # 既定ではワークフロー1つだけ
+          grep -q 'workflows: \["CI"\]' .github/workflows/taskrail.yml
+          node "$GITHUB_WORKSPACE/dist/cli.js" init --owner example --ref v0 --docs --issue-template --config
+          node "$GITHUB_WORKSPACE/dist/cli.js" doctor --offline
           node "$GITHUB_WORKSPACE/dist/cli.js" labels sync --dry-run
           node "$GITHUB_WORKSPACE/dist/cli.js" update --ref v9 --dry-run

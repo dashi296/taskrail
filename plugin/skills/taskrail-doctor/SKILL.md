@@ -24,7 +24,7 @@ description: taskrail が期待どおりに動かない原因を調べる。「t
 
 | 分類 | 例 | 直す場所 |
 | --- | --- | --- |
-| 設定 | Secrets、App の権限、ブランチ保護、`bot_logins` | リポジトリ設定、`taskrail.yml` |
+| 設定 | Secrets、App の権限、ブランチ保護、`bot_logins` | リポジトリ設定、変数 `TASKRAIL_CONFIG`、`taskrail.yml`(あれば) |
 | Issue の質 | 受け入れ条件が曖昧で差し戻しが続く | Issue を `flow::spec` に戻して書き直す |
 | ルールの不足 | 同じ指摘が繰り返される | このリポジトリの linter・テスト・`docs/` |
 | プロンプト・フロー | 工程の指示自体が不適切 | taskrail 本体のリポジトリ |
