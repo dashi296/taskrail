@@ -11,7 +11,7 @@ Inbox → Spec → Plan → Ready → In Progress → Verify → Human Review �
 列は `flow::` ラベルで表します。列を動かすと、その列を担当するエージェントが動きます。
 人間が行うのは、仕様の承認、計画の承認、AIの質問への回答、最終レビューとマージの4つだけです。
 
-> **状態**: v0.1(初期版)。GitHub は実装済みですが、実リポジトリでの通し検証はこれからです。
+> **状態**: v0.1(初期版)。GitHub は実装済みで、ローカル実行での通し検証は済んでいます。GitHub Actions 上での通し検証はこれからです。
 > GitLab はインターフェースと CI 雛形のみです。[既知の制約](#既知の制約と今後)を必ず読んでください。
 
 ## 考え方
@@ -40,9 +40,9 @@ src/                  CLI(flow/ を読んで実行するだけの薄い実行器
   adapters/             GitHub / GitLab の差を吸収する層
   commands/             サブコマンド
 .github/workflows/    再利用ワークフロー(route.yml、board.yml)と、このリポジトリ自身の CI
-templates/            `taskrail init` が導入先に配置するファイル
+templates/            `taskrail init` が導入先に配置するファイル(既定ではワークフロー1つ)
 plugin/               Claude Code プラグイン(skills)
-docs/                 設計・安全性・GitLab 対応の文書
+docs/                 設計・安全性・GitLab 対応の文書、利用者向けの説明(workflow.md、runbook.md)
 ```
 
 ## 導入
@@ -70,6 +70,17 @@ npm ci && npm link        # taskrail コマンドが使えるようになる
 taskrail init --owner <your-org> --ref v0
 ```
 
+導入先のリポジトリに置くのは `.github/workflows/taskrail.yml` の1ファイルだけです。
+`workflow_run` が対象にする CI の名前は、既存の CI ワークフローから自動で入ります。
+
+必要なものだけ追加で置けます。
+
+| フラグ | 置くファイル | 置かない場合 |
+| --- | --- | --- |
+| `--docs` | `docs/constitution.md`(判断の原則) | taskrail 同梱の既定の原則([flow/constitution.md](flow/constitution.md))を使う |
+| `--issue-template` | 起票フォーム | 起票の書式は自由。項目が足りなければトリアージで質問が返る |
+| `--config` | `taskrail.yml`(設定) | 既定値と、リポジトリ変数 `TASKRAIL_CONFIG` を使う |
+
 続けて、次を設定します。
 
 | 種類 | 名前 | 値 |
@@ -78,16 +89,33 @@ taskrail init --owner <your-org> --ref v0
 | Secret | `TASKRAIL_APP_ID` | GitHub App の App ID |
 | Secret | `TASKRAIL_APP_PRIVATE_KEY` | GitHub App の秘密鍵 |
 | Variable | `TASKRAIL_ENABLED` | `true`(`false` で全体を停止) |
+| Variable | `TASKRAIL_CONFIG` | 任意。設定を YAML で書く(下記) |
 
 そのうえで:
 
-1. `taskrail.yml` の `bot_logins` に App のログイン名(例: `my-taskrail[bot]`)を設定する。
-2. `.github/workflows/taskrail.yml` の `workflow_run.workflows` を、CI ワークフローの `name` に合わせる。
-3. `CLAUDE.md` と `docs/constitution.md` をこのリポジトリ向けに書き換える。
-4. 既定ブランチの保護を有効にする(レビュー必須、直接 push 禁止)。
-5. `taskrail labels sync` → `taskrail doctor`。
+1. 既定ブランチの保護を有効にする(レビュー必須、直接 push 禁止)。
+2. `taskrail labels sync` → `taskrail doctor`。
 
-Claude Code を使っているなら、プラグインの `taskrail-init` skill が 3 を含めて対話的に進めます。
+#### 設定
+
+設定は、既定値 < リポジトリ変数 `TASKRAIL_CONFIG` < `taskrail.yml` の順に、キーごとに上書きされます。
+既定値のままで動きます。変える場合は、たとえば次のように書きます。
+
+```yaml
+check_commands: [npm run lint, npm test]   # エージェントが完了前に通すコマンド。空なら文書や CI の定義から判断する
+protected_paths: [".github/**", "taskrail.yml", "CODEOWNERS", "db/migrations/**", "**/.env*"]
+wip_limit: 2
+```
+
+`bot_logins`(Issue コメント内の記録を信頼する投稿者)は、Actions では GitHub App から自動で決まります。
+設定をリポジトリ変数に置くと、変更は PR レビューを通りません。レビューで管理したい場合は `--config` で `taskrail.yml` を置きます。
+
+#### ルール文書
+
+エージェントは、導入先にある `CLAUDE.md`、`AGENTS.md`、`docs/constitution.md` を読みます。どれもなければ、README と既存のコードから慣習を読み取ります。
+判断の原則(`docs/constitution.md`)がなければ、同梱の既定の原則がプロンプトに埋め込まれます。
+
+Claude Code を使っているなら、プラグインの `taskrail-init` skill が導入を対話的に進めます。
 
 ```
 /plugin marketplace add <your-org>/taskrail
@@ -98,7 +126,7 @@ Claude Code を使っているなら、プラグインの `taskrail-init` skill 
 
 | コマンド | 用途 | 使う人 |
 | --- | --- | --- |
-| `init` | 薄いワークフローと雛形を配置する | 人間 |
+| `init` | 入口のワークフローを配置する(`--docs` `--issue-template` `--config` で追加) | 人間 |
 | `update --ref <tag>` | 参照するタグを書き換える | 人間 |
 | `doctor` | 導入状態を診断する | 人間 |
 | `labels sync` | ラベルを作成・更新する | 人間 |
@@ -154,8 +182,9 @@ npm run check    # 型チェック + 単体テスト + flow.yml の整合性検�
 
 ## 既知の制約と今後
 
-- **実環境での通し検証が未了です。** 単体テストと CLI のドライランは通っていますが、
-  GitHub Actions 上で Issue が Inbox から Done まで流れることは、まだ確認していません。
+- **GitHub Actions 上での通し検証が未了です。** ローカル実行(`scripts/local-run.sh`)では、
+  Issue が Inbox から Human Review まで流れること(差し戻しを含む)を確認済みです。
+  Actions 上の連鎖(App によるラベル変更 → 次の工程の起動)は、まだ確認していません。
   最初は社内向けのリポジトリで、`size::s` の Issue から試してください。
 - `anthropics/claude-code-action@v1` の入力名(`prompt`、`claude_args`)に依存しています。
   action 側の変更で動かなくなる可能性があるため、導入時に最新の README を確認してください。

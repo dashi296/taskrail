@@ -17,17 +17,21 @@ description: リポジトリに taskrail(Issueボード駆動のAI開発フロ�
    - taskrail リポジトリを置いている Organization 名(`--owner`)
    - 参照するタグ(`--ref`。分からなければ taskrail リポジトリの最新タグを提案する)
 
-3. **雛形を配置する。** `taskrail init --owner <org> --ref <tag>` を実行する。
-   既存ファイルは上書きされない。「既存」と表示されたファイルは、内容を確認して利用者に統合方法を提案する。
+3. **入口を配置する。** `taskrail init --owner <org> --ref <tag>` を実行する。
+   置かれるのは `.github/workflows/taskrail.yml` だけです。導入先を汚さないことが既定の方針なので、
+   ほかのファイルは利用者が望んだときだけ置く(`--docs`、`--issue-template`、`--config`)。
+   「CI ワークフローが見つかりません」と出たら、実在する CI の `name` を利用者に確認して直す。
 
-4. **リポジトリを調べて、ルール文書を書き換える。** ここがあなたの主な仕事です。
-   - `CLAUDE.md` の「コマンド」を、このリポジトリの実際の lint・型チェック・テストのコマンドに直す。
-     `package.json`、`Makefile`、CI 定義から読み取り、実際に実行して通ることを確認する。
-   - `CLAUDE.md` の「構成」に、主要なディレクトリの役割を数行で書く。
-   - `docs/constitution.md` の「このプロジェクト固有の原則」を、コードから読み取れる範囲で提案する。
-     確信のないものは書かず、利用者への質問として残す。原則は利用者が決めるものです。
-   - `.github/workflows/taskrail.yml` の `workflow_run.workflows` を、実在する CI ワークフローの `name` に合わせる。
-   - `taskrail.yml` の `protected_paths` に、このリポジトリのマイグレーションや設定ファイルの場所を加える。
+4. **リポジトリを調べて、設定を提案する。** ここがあなたの主な仕事です。
+   - `check_commands`: `package.json`、`Makefile`、CI 定義から lint・型チェック・テストのコマンドを読み取り、
+     実際に実行して通ることを確認してから提案する。
+   - `protected_paths`: 既定(`.github/**`、`taskrail.yml`、`CODEOWNERS`、`**/migrations/**`、`**/.env*`)に、
+     このリポジトリのマイグレーションや設定ファイルの場所を足す。
+   - 提案した設定は、利用者に置き場所を選んでもらう。リポジトリ変数 `TASKRAIL_CONFIG`(ファイルを増やさない)か、
+     `taskrail.yml`(`--config`。変更を PR レビューで管理できる)。
+   - プロジェクト固有の原則があるか、利用者に聞く。あれば `--docs` で `docs/constitution.md` を置き、
+     「このプロジェクト固有の原則」に書く。確信のないものは書かず、質問として残す。原則は利用者が決めるものです。
+   - 既存の `CLAUDE.md` / `AGENTS.md` は書き換えない。エージェントはあれば読みます。
 
 5. **ラベルを同期する。** `taskrail labels sync` を実行する。
 
@@ -38,6 +42,7 @@ description: リポジトリに taskrail(Issueボード駆動のAI開発フロ�
 
 ## 利用者に必ず伝えること
 
-- `taskrail.yml` の `bot_logins` に GitHub App のログイン名を設定するまで、Issue 上の記録は偽装されうる。
+- `bot_logins` は Actions では GitHub App から自動で決まる。ローカル実行では投稿者で絞り込まないので、外部の人が書き込める Issue で使わない。
+- 設定を `TASKRAIL_CONFIG` に置くと、変更が PR レビューを通らない。
 - 既定ブランチの保護を有効にするまで、AI のトークンで直接 push できてしまう。
 - 最初は 1 リポジトリ、`size::s` の Issue から始める。

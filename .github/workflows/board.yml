@@ -1,16 +1,13 @@
-# 再利用ワークフロー: AIを呼ばない、ボードの決定的な操作。
-#   dispatch: Ready → In Progress(WIP上限と依存関係を確認)
-#   advance:  PR 側の出来事(CI成功・修正依頼・マージ)を列の移動に反映
-#   resume:   blocked の Issue を回答コメントで再開
+# 再利用ワークフロー: AIを呼ばない、ボードの決定的な操作。実行するコマンドはイベントから決める。
+#   dispatch: Ready → In Progress(WIP上限と依存関係を確認)       ← schedule / workflow_dispatch
+#   advance:  CI成功 → Verify、修正依頼 → In Progress、マージ → Done ← workflow_run / pull_request_review / pull_request
+#   resume:   blocked の Issue を回答コメントで再開                 ← issue_comment
+# 対象が taskrail の作業ブランチかどうかは CLI が branch_prefix で判定する。
 name: taskrail / board
 
 on:
   workflow_call:
     inputs:
-      command:
-        description: dispatch | advance | resume
-        type: string
-        required: true
       taskrail_repo:
         type: string
         required: true
@@ -20,14 +17,8 @@ on:
       enabled:
         type: string
         default: "true"
-      branch:
-        description: advance の対象ブランチ
-        type: string
-        default: ""
-      to:
-        type: string
-        default: ""
-      from:
+      config:
+        description: taskrail の設定(YAML)。リポジトリ変数 TASKRAIL_CONFIG を渡す
         type: string
         default: ""
     secrets:
@@ -45,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: taskrail-board-${{ inputs.command }}-${{ inputs.branch }}
+      group: taskrail-board-${{ github.event_name }}-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref || github.event.issue.number || 'all' }}
       cancel-in-progress: false
     env:
       TASKRAIL_ENABLED: ${{ inputs.enabled }}
@@ -83,18 +74,27 @@ jobs:
           cd "$RUNNER_TEMP/taskrail" && npm ci --no-audit --no-fund
           echo "TASKRAIL=node $RUNNER_TEMP/taskrail/dist/cli.js" >> "$GITHUB_ENV"
 
-      - name: ${{ inputs.command }}
+      - name: イベントからコマンドを決めて実行
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          TASKRAIL_CONFIG: ${{ vars.TASKRAIL_CONFIG }}
+          TASKRAIL_CONFIG: ${{ inputs.config }}
           TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
-          BRANCH: ${{ inputs.branch }}
-          TO: ${{ inputs.to }}
-          FROM: ${{ inputs.from }}
         run: |
-          case "${{ inputs.command }}" in
-            dispatch) $TASKRAIL dispatch ;;
-            resume)   $TASKRAIL resume --event "$GITHUB_EVENT_PATH" ;;
-            advance)  $TASKRAIL advance --branch "$BRANCH" --to "$TO" ${FROM:+--from "$FROM"} ;;
-            *) echo "未知のコマンド: ${{ inputs.command }}" >&2; exit 1 ;;
+          ev="$GITHUB_EVENT_PATH"
+          case "$GITHUB_EVENT_NAME" in
+            schedule|workflow_dispatch)
+              $TASKRAIL dispatch ;;
+            issue_comment)
+              $TASKRAIL resume --event "$ev" ;;
+            workflow_run)
+              [ "$(jq -r .workflow_run.conclusion "$ev")" = success ] || exit 0
+              $TASKRAIL advance --branch "$(jq -r .workflow_run.head_branch "$ev")" --from doing --to verify ;;
+            pull_request_review)
+              [ "$(jq -r .review.state "$ev")" = changes_requested ] || exit 0
+              $TASKRAIL advance --branch "$(jq -r .pull_request.head.ref "$ev")" --from review --to doing ;;
+            pull_request)
+              [ "$(jq -r .pull_request.merged "$ev")" = true ] || exit 0
+              $TASKRAIL advance --branch "$(jq -r .pull_request.head.ref "$ev")" --from review --to done ;;
+            *)
+              echo "対象外のイベント: $GITHUB_EVENT_NAME" ;;
           esac

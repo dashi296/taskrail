@@ -1,0 +1,74 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
+import { detectCiWorkflows, init, missingCiWorkflows } from "../src/commands/setup.js";
+
+const repo = (workflows: Record<string, string> = {}) => {
+  const d = mkdtempSync(join(tmpdir(), "taskrail-init-"));
+  mkdirSync(join(d, ".github", "workflows"), { recursive: true });
+  for (const [f, text] of Object.entries(workflows)) writeFileSync(join(d, ".github", "workflows", f), text);
+  return d;
+};
+
+describe("CI ワークフローの検出", () => {
+  it("pull_request か push で起動するワークフローの name を返す", () => {
+    const d = repo({
+      "ci.yml": "name: CI\non: [push, pull_request]\njobs: {}\n",
+      "lint.yml": "name: Lint\non:\n  pull_request:\n    branches: [main]\njobs: {}\n",
+      "release.yml": "name: Release\non:\n  release:\n    types: [published]\njobs: {}\n",
+      "taskrail.yml": "name: taskrail\non: push\njobs: {}\n",
+    });
+    expect(detectCiWorkflows(d)).toEqual(["CI", "Lint"]);
+  });
+  it("name がなければファイルのパスを名前にする(GitHub と同じ)", () => {
+    expect(detectCiWorkflows(repo({ "test.yml": "on: pull_request\njobs: {}\n" }))).toEqual([".github/workflows/test.yml"]);
+  });
+  it("壊れた YAML は無視する", () => {
+    expect(detectCiWorkflows(repo({ "bad.yml": "on: [\n" }))).toEqual([]);
+  });
+  it("呼び出し側が参照する CI のうち、実在しないものを返す", () => {
+    const caller = 'on:\n  workflow_run:\n    workflows: ["CI", "Old"]\n';
+    expect(missingCiWorkflows(caller, ["CI"])).toEqual(["Old"]);
+    expect(missingCiWorkflows("on: push\n", ["CI"])).toHaveLength(1);
+  });
+});
+
+describe("init", () => {
+  const cwd = process.cwd();
+  afterEach(() => {
+    process.chdir(cwd);
+    vi.restoreAllMocks();
+  });
+  const run = (d: string, opts: Partial<Parameters<typeof init>[0]> = {}) => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    process.chdir(d);
+    init({ platform: "github", owner: "acme", ref: "v1", ...opts });
+  };
+
+  it("既定ではワークフロー1つだけを置き、CI の名前を埋める", () => {
+    const d = repo({ "ci.yml": "name: Build\non: pull_request\njobs: {}\n" });
+    run(d);
+    const wf = readFileSync(join(d, ".github/workflows/taskrail.yml"), "utf8");
+    expect(wf).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    expect(wf).toContain("acme/taskrail/.github/workflows/route.yml@v1");
+    expect((parse(wf) as { on: { workflow_run: { workflows: string[] } } }).on.workflow_run.workflows).toEqual(["Build"]);
+    for (const f of ["taskrail.yml", "CLAUDE.md", "docs", ".github/ISSUE_TEMPLATE"]) expect(existsSync(join(d, f))).toBe(false);
+    expect(wf).toContain("startsWith(github.event.workflow_run.head_branch, 'issue-')");
+  });
+  it("フラグで任意のファイルを置く", () => {
+    const d = repo();
+    run(d, { docs: true, issueTemplate: true, config: true });
+    expect(existsSync(join(d, ".github/ISSUE_TEMPLATE/task.yml"))).toBe(true);
+    expect(readFileSync(join(d, "taskrail.yml"), "utf8")).toContain('taskrail_ref: "v1"');
+    const constitution = readFileSync(join(d, "docs/constitution.md"), "utf8");
+    expect(constitution).toContain("## このプロジェクト固有の原則");
+    expect(constitution).not.toContain("既定の原則です。導入先に");
+  });
+  it("CI が見つからなければ \"CI\" を入れる", () => {
+    const d = repo();
+    run(d);
+    expect(readFileSync(join(d, ".github/workflows/taskrail.yml"), "utf8")).toContain('workflows: ["CI"]');
+  });
+});
