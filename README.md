@@ -117,6 +117,23 @@ taskrail route --issue 12 --stage spec --no-checkout   # .taskrail/run/ にプ�
 taskrail apply --issue 12 --stage spec --dry-run       # 投稿されるコメントを表示(書き込まない)
 ```
 
+### ローカルで1工程ずつ回す
+
+GitHub App や `ANTHROPIC_API_KEY` がなくても、`scripts/local-run.sh` で route → エージェント → apply を手元で実行できます。
+エージェントは手元の Claude Code(`claude -p`)で動き、Issue への書き込みは `gh` のログインユーザー名義で行われます。
+
+```sh
+cd <導入先リポジトリ>                                  # 作業ツリーはクリーンにしておく
+/path/to/taskrail/scripts/local-run.sh 12             # Issue に付いている flow:: の列を実行
+/path/to/taskrail/scripts/local-run.sh 12 spec        # 列を指定して実行
+DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まずに表示だけ
+```
+
+- 列を動かしても次の工程は自動では起動しません。工程ごとに実行し直します。
+- 人間の操作(仕様・計画の承認)はラベルを手で付け替えます。
+- AIを使わない遷移はコマンドで行います。ready → doing は `taskrail dispatch`、CI 成功後の doing → verify は `taskrail advance --branch <作業ブランチ> --from doing --to verify` です。
+- 導入先の Actions が誤って動かないよう、リポジトリ変数 `TASKRAIL_ENABLED` を `false` にしておきます。
+
 ## 改善の回し方
 
 フローの定義はデータ(`flow/`)、CLI は実行器です。日々の改善はほとんど `flow/` の変更で済みます。
