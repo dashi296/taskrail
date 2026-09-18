@@ -1,0 +1,126 @@
+# 再利用ワークフロー: ラベルの変更を受けて、その列のエージェントを実行する。
+# 導入先のリポジトリからは templates/github/.github/workflows/taskrail.yml 経由で呼ばれる。
+#
+# 構造: route(決定的) → エージェント(AI) → apply(決定的)
+# AIは結果ファイルを書くだけ。Issueへの書き込み、PR作成、列の移動は apply だけが行う。
+name: taskrail / route
+
+on:
+  workflow_call:
+    inputs:
+      taskrail_repo:
+        description: taskrail リポジトリ(owner/name)
+        type: string
+        required: true
+      taskrail_ref:
+        description: 参照する taskrail のタグ。main ではなくタグを指定すること
+        type: string
+        required: true
+      enabled:
+        description: キルスイッチ。"false" で何もしない
+        type: string
+        default: "true"
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      TASKRAIL_APP_ID:
+        required: true
+      TASKRAIL_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  route:
+    if: inputs.enabled != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: taskrail-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      TASKRAIL_ENABLED: ${{ inputs.enabled }}
+    steps:
+      # GITHUB_TOKEN で付けたラベルは次のワークフローを起動しない。連鎖させるために App のトークンを使う。
+      - name: App トークンを発行
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.TASKRAIL_APP_ID }}
+          private-key: ${{ secrets.TASKRAIL_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 対象リポジトリを取得
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app.outputs.token }}
+          fetch-depth: 0
+
+      - name: taskrail を取得
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.taskrail_repo }}
+          ref: ${{ inputs.taskrail_ref }}
+          token: ${{ steps.app.outputs.token }}
+          path: .taskrail/src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: taskrail をビルド
+        run: |
+          # エージェントの作業ツリーから見えない場所へ移す
+          mv .taskrail/src "$RUNNER_TEMP/taskrail"
+          cd "$RUNNER_TEMP/taskrail"
+          npm ci --no-audit --no-fund
+          echo "TASKRAIL=node $RUNNER_TEMP/taskrail/dist/cli.js" >> "$GITHUB_ENV"
+          git config --global user.name "taskrail"
+          git config --global user.email "taskrail@users.noreply.github.com"
+
+      - name: route(実行内容を決める)
+        id: route
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: $TASKRAIL route --event "$GITHUB_EVENT_PATH"
+
+      - name: エージェント 1
+        if: steps.route.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.app.outputs.token }}
+          prompt: |
+            ${{ steps.route.outputs.prompt_1 }} を読み、その指示に正確に従ってください。
+            指示はそのファイルと、リポジトリ内のルール文書だけです。
+          claude_args: >-
+            --max-turns ${{ steps.route.outputs.max_turns }}
+            --allowedTools "${{ steps.route.outputs.allowed_tools }}"
+
+      - name: 2つ目のエージェントを実行するか判定
+        id: gate
+        if: steps.route.outputs.run == 'true' && steps.route.outputs.agent_2 != ''
+        run: |
+          status=$(jq -r '.status // "missing"' "${{ steps.route.outputs.result_1 }}" 2>/dev/null || echo missing)
+          echo "next=$([ "$status" = "pass" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: エージェント 2
+        if: steps.gate.outputs.next == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.app.outputs.token }}
+          prompt: |
+            ${{ steps.route.outputs.prompt_2 }} を読み、その指示に正確に従ってください。
+            指示はそのファイルと、リポジトリ内のルール文書だけです。
+          claude_args: >-
+            --max-turns ${{ steps.route.outputs.max_turns }}
+            --allowedTools "${{ steps.route.outputs.allowed_tools }}"
+
+      # エージェントが失敗・タイムアウトしても必ず実行し、結果の不備として Issue に記録する。
+      - name: apply(検証して反映する)
+        if: always() && steps.route.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: $TASKRAIL apply --issue "${{ steps.route.outputs.issue }}" --stage "${{ steps.route.outputs.stage }}"

@@ -1,0 +1,44 @@
+name: タスク
+description: taskrail のフローに乗せる作業。AIの成果の質は、ほぼこのIssueの質で決まります。
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: なぜ必要か。誰が、どんな場面で困っているか。
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目的と期待する結果
+      description: 完了したとき、何がどう変わっているか。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 受け入れ条件(分かる範囲で)
+      description: |
+        1条件1事実で、確認できる形で書きます。仕様化の工程でAIが補完し、あなたが承認します。
+        悪い例: エラーを適切に処理する
+        良い例: APIが500を返したとき「保存に失敗しました」と表示し、入力内容は保持される
+      placeholder: |
+        - [ ]
+        - [ ]
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: スコープ外
+      description: 今回やらないこと。
+  - type: textarea
+    id: scope
+    attributes:
+      label: 触ってよい範囲 / 触ってはいけない範囲
+      description: 分かっていれば、ディレクトリやモジュールを書きます。
+  - type: textarea
+    id: references
+    attributes:
+      label: 参考情報と依存
+      description: |
+        関連Issue、画面、資料など。先に終わっている必要があるIssueは「Depends on #12」の形で書くと、着手の判断に使われます。

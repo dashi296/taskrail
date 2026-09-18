@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # 型チェック、単体テスト、同梱の flow.yml とプロンプトの整合性検査
+      - run: npm run check
+      - name: init のスモークテスト
+        run: |
+          mkdir "$RUNNER_TEMP/target" && cd "$RUNNER_TEMP/target" && git init -q
+          node "$GITHUB_WORKSPACE/dist/cli.js" init --owner example --ref v0
+          node "$GITHUB_WORKSPACE/dist/cli.js" labels sync --dry-run
+          node "$GITHUB_WORKSPACE/dist/cli.js" update --ref v9 --dry-run

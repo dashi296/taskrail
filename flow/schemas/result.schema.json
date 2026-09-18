@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://taskrail.dev/schemas/result.schema.json",
+  "title": "taskrail agent result",
+  "description": "各エージェントが工程の最後に書き出す結果。src/core/result.ts の zod スキーマと同期させること。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent", "status", "summary"],
+  "properties": {
+    "agent": { "type": "string" },
+    "status": { "enum": ["pass", "fail", "blocked"] },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "artifact": {
+      "type": "string",
+      "description": "次工程に引き継ぐ成果物(仕様・計画)のMarkdown。Issueにコメントとして保存される。"
+    },
+    "questions": { "type": "array", "items": { "type": "string" } },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size": { "enum": ["s", "m", "l"] },
+        "ai": { "enum": ["ok", "no"] }
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "met"],
+        "properties": {
+          "text": { "type": "string" },
+          "met": { "type": "boolean" },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "message"],
+        "properties": {
+          "severity": { "enum": ["blocker", "major", "minor"] },
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "pr_title": { "type": "string" }
+  }
+}

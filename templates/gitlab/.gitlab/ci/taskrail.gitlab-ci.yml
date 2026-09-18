@@ -1,0 +1,62 @@
+# taskrail の GitLab CI 雛形(未完成)。
+#
+# 現状: GitLab アダプタ(src/adapters/gitlab.ts)が未実装のため、このジョブはまだ動きません。
+# 構造を先に固めるための雛形です。実装方針は taskrail 本体の docs/gitlab.md を参照してください。
+#
+# 使い方: プロジェクトの .gitlab-ci.yml に次を追加します。
+#   include:
+#     - local: .gitlab/ci/taskrail.gitlab-ci.yml
+#
+# GitLab はラベルの変更でパイプラインを直接起動できません。
+# Webhook(Issue / Note / Merge request イベント)を受けるリスナーが、パイプライントリガー API を
+#   TASKRAIL_COMMAND(route | dispatch | advance | resume)と TASKRAIL_EVENT(イベントのJSON)
+# を変数として渡して呼び出す構成にします。
+
+variables:
+  TASKRAIL_REPO: "{{TASKRAIL_OWNER}}/taskrail"
+  taskrail_ref: "{{TASKRAIL_REF}}"
+
+.taskrail-base:
+  image: node:20
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "trigger" && $TASKRAIL_COMMAND && $TASKRAIL_ENABLED != "false"'
+  before_script:
+    - git clone --depth 1 --branch "$taskrail_ref" "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${TASKRAIL_REPO}.git" /opt/taskrail
+    - (cd /opt/taskrail && npm ci --no-audit --no-fund)
+    - export TASKRAIL="node /opt/taskrail/dist/cli.js"
+    - echo "$TASKRAIL_EVENT" > /tmp/event.json
+
+taskrail:route:
+  extends: .taskrail-base
+  stage: build
+  timeout: 45m
+  resource_group: taskrail-$TASKRAIL_ISSUE # 同じ Issue の工程を同時に走らせない
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "trigger" && $TASKRAIL_COMMAND == "route" && $TASKRAIL_ENABLED != "false"'
+  script:
+    - $TASKRAIL route --event /tmp/event.json > route.env
+    - source route.env
+    - '[ "$run" = "true" ] || exit 0'
+    - curl -fsSL https://claude.ai/install.sh | bash && export PATH="$HOME/.local/bin:$PATH"
+    - claude -p "$prompt_1 を読み、その指示に正確に従ってください。" --max-turns "$max_turns" --allowedTools "$allowed_tools" --permission-mode acceptEdits
+    - |
+      if [ -n "$agent_2" ] && [ "$(jq -r .status "$result_1")" = "pass" ]; then
+        claude -p "$prompt_2 を読み、その指示に正確に従ってください。" --max-turns "$max_turns" --allowedTools "$allowed_tools" --permission-mode acceptEdits
+      fi
+  after_script:
+    - node /opt/taskrail/dist/cli.js apply --issue "$TASKRAIL_ISSUE" --stage "$TASKRAIL_STAGE"
+
+taskrail:board:
+  extends: .taskrail-base
+  stage: build
+  timeout: 10m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "trigger" && $TASKRAIL_COMMAND =~ /^(dispatch|advance|resume)$/ && $TASKRAIL_ENABLED != "false"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $TASKRAIL_COMMAND == "dispatch" && $TASKRAIL_ENABLED != "false"'
+  script:
+    - |
+      case "$TASKRAIL_COMMAND" in
+        dispatch) $TASKRAIL dispatch ;;
+        resume)   $TASKRAIL resume --event /tmp/event.json ;;
+        advance)  $TASKRAIL advance --branch "$TASKRAIL_BRANCH" --to "$TASKRAIL_TO" ${TASKRAIL_FROM:+--from "$TASKRAIL_FROM"} ;;
+      esac

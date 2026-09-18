@@ -1,0 +1,13 @@
+{
+  "name": "taskrail",
+  "owner": {
+    "name": "taskrail maintainers"
+  },
+  "plugins": [
+    {
+      "name": "taskrail",
+      "source": "./plugin",
+      "description": "taskrail の導入・診断・Issue作成を支援する skills"
+    }
+  ]
+}

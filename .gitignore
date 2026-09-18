@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.taskrail/run/
+*.log
+.DS_Store

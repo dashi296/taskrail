@@ -1,0 +1,98 @@
+# 再利用ワークフロー: AIを呼ばない、ボードの決定的な操作。
+#   dispatch: Ready → In Progress(WIP上限と依存関係を確認)
+#   advance:  PR 側の出来事(CI成功・修正依頼・マージ)を列の移動に反映
+#   resume:   blocked の Issue を回答コメントで再開
+name: taskrail / board
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: dispatch | advance | resume
+        type: string
+        required: true
+      taskrail_repo:
+        type: string
+        required: true
+      taskrail_ref:
+        type: string
+        required: true
+      enabled:
+        type: string
+        default: "true"
+      branch:
+        description: advance の対象ブランチ
+        type: string
+        default: ""
+      to:
+        type: string
+        default: ""
+      from:
+        type: string
+        default: ""
+    secrets:
+      TASKRAIL_APP_ID:
+        required: true
+      TASKRAIL_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  board:
+    if: inputs.enabled != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: taskrail-board-${{ inputs.command }}-${{ inputs.branch }}
+      cancel-in-progress: false
+    env:
+      TASKRAIL_ENABLED: ${{ inputs.enabled }}
+    steps:
+      - name: App トークンを発行
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.TASKRAIL_APP_ID }}
+          private-key: ${{ secrets.TASKRAIL_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      # taskrail.yml を読むために取得する。信頼できない PR のコードは取得しない(既定ブランチのみ)。
+      - name: 対象リポジトリの既定ブランチを取得
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ steps.app.outputs.token }}
+
+      - name: taskrail を取得
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.taskrail_repo }}
+          ref: ${{ inputs.taskrail_ref }}
+          token: ${{ steps.app.outputs.token }}
+          path: .taskrail/src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: taskrail をビルド
+        run: |
+          mv .taskrail/src "$RUNNER_TEMP/taskrail"
+          cd "$RUNNER_TEMP/taskrail" && npm ci --no-audit --no-fund
+          echo "TASKRAIL=node $RUNNER_TEMP/taskrail/dist/cli.js" >> "$GITHUB_ENV"
+
+      - name: ${{ inputs.command }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: ${{ inputs.branch }}
+          TO: ${{ inputs.to }}
+          FROM: ${{ inputs.from }}
+        run: |
+          case "${{ inputs.command }}" in
+            dispatch) $TASKRAIL dispatch ;;
+            resume)   $TASKRAIL resume --event "$GITHUB_EVENT_PATH" ;;
+            advance)  $TASKRAIL advance --branch "$BRANCH" --to "$TO" ${FROM:+--from "$FROM"} ;;
+            *) echo "未知のコマンド: ${{ inputs.command }}" >&2; exit 1 ;;
+          esac

@@ -1,0 +1,23 @@
+# `taskrail labels sync` が作成・更新するラベル。
+# flow:: ラベルは flow.yml の stages から自動生成されるため、ここには書きません。
+labels:
+  - name: blocked
+    color: "B60205"
+    description: AIが質問を残して停止中。回答コメントで再開します
+  - name: "ai::ok"
+    color: "0E8A16"
+    description: AIに実装を任せてよい
+  - name: "ai::no"
+    color: "5319E7"
+    description: 人間が実装する(認証・課金・マイグレーション・インフラなど)
+  - name: "size::s"
+    color: "C5DEF5"
+    description: 小。計画の承認を省略できる
+  - name: "size::m"
+    color: "86B6E8"
+    description: 中。半日以内
+  - name: "size::l"
+    color: "1D76DB"
+    description: 大。Plan列で必ず子Issueに分割する
+
+flow_label_color: "FBCA04"

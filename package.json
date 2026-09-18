@@ -1,0 +1,36 @@
+{
+  "name": "taskrail",
+  "version": "0.1.0",
+  "description": "Issueボード駆動のAIエージェント開発フレームワーク。タスクをレールに乗せ、ゲートを通して左から右へ進めます。",
+  "type": "module",
+  "bin": {
+    "taskrail": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "flow",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && node dist/cli.js validate --flow",
+    "prepare": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.5.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

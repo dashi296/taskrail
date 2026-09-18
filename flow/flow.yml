@@ -1,0 +1,75 @@
+# taskrail フロー定義
+# ボードの列 = stage。列の移動 = ラベル `<label_prefix><id>` の付け替え。
+# このファイルがフローの唯一の定義で、CLIはこれを読んで実行するだけです。
+#
+# on_result: エージェントの結果(pass / fail / blocked)ごとの遷移先。
+#            `stay` は列を動かさない(人間の承認待ち、またはCI待ち)。
+# human_next:  人間が手で動かしてよい遷移先。
+# system_next: taskrail自身(dispatch / advance)が動かしてよい遷移先。
+version: 1
+label_prefix: "flow::"
+blocked_label: blocked
+
+stages:
+  - id: inbox
+    title: Inbox
+    agents: [triage]
+    mode: read
+    max_turns: 10
+    on_result: { pass: spec, fail: stay, blocked: stay }
+    human_next: [spec]
+
+  - id: spec
+    title: Spec
+    agents: [spec]
+    mode: read
+    max_turns: 25
+    # 仕様は人間が承認する。AIは起案だけ行い、列は動かさない。
+    on_result: { pass: stay, fail: stay, blocked: stay }
+    human_next: [plan, inbox]
+
+  - id: plan
+    title: Plan
+    agents: [plan]
+    mode: read
+    max_turns: 25
+    on_result: { pass: stay, fail: stay, blocked: stay }
+    # size::s は計画の承認を省略して ready へ進める。
+    auto_approve: { sizes: [s], to: ready }
+    human_next: [ready, spec]
+
+  - id: ready
+    title: Ready
+    agents: []
+    system_next: [doing]
+    human_next: [doing, plan]
+
+  - id: doing
+    title: In Progress
+    agents: [implement]
+    mode: write
+    max_turns: 60
+    # pass でも列は動かさない。PR/MRのCIが緑になったら advance が verify へ進める。
+    on_result: { pass: stay, fail: stay, blocked: stay }
+    system_next: [verify]
+    human_next: [ready]
+
+  - id: verify
+    title: Verify
+    # 順に実行し、すべて pass のときだけ合格。実装したエージェントとは別コンテキスト。
+    agents: [verify-spec, code-review]
+    mode: read
+    max_turns: 30
+    on_result: { pass: review, fail: doing, blocked: stay }
+    counts_rework: true
+    human_next: [doing, review]
+
+  - id: review
+    title: Human Review
+    agents: []
+    system_next: [done, doing]
+    human_next: [done, doing]
+
+  - id: done
+    title: Done
+    agents: []

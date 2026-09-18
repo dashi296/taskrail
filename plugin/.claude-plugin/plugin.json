@@ -1,0 +1,5 @@
+{
+  "name": "taskrail",
+  "version": "0.1.0",
+  "description": "Issueボード駆動のAIエージェント開発フレームワーク taskrail の導入・診断・Issue作成を支援します"
+}

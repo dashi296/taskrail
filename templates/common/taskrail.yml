@@ -1,0 +1,27 @@
+# taskrail のプロジェクト設定。フロー自体の定義は taskrail 本体(flow/flow.yml)にあります。
+
+# 参照している taskrail のタグ。`taskrail update --ref <tag>` が書き換えます。
+taskrail_ref: "{{TASKRAIL_REF}}"
+
+platform: {{PLATFORM}}
+
+# In Progress + Verify に同時に置ける Issue の数。まず 2 で始め、レビューが詰まらなければ増やします。
+wip_limit: 2
+
+# Verify からの差し戻しの上限。超えたら blocked にして人間へ渡します。
+max_rework: 3
+
+# taskrail が使う GitHub App のログイン名(例: "my-taskrail[bot]")。
+# 必ず設定してください。未設定だと、Issueコメント内の記録を誰でも偽装できます。
+bot_logins: []
+
+# AIによる変更を禁止するパス。変更が含まれていたら、PRを作らずに blocked にします。
+protected_paths:
+  - ".github/**"
+  - ".gitlab-ci.yml"
+  - "taskrail.yml"
+  - "CODEOWNERS"
+  - "**/migrations/**"
+  - "**/.env*"
+
+branch_prefix: "issue-"
