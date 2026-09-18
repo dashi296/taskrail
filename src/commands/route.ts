@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { canTransition, flowLabel, stageFromLabel } from "../core/flow.js";
-import { excludeRunDir, git, resolveBranch, tryGit } from "../core/git.js";
+import { excludeTaskrailDir, git, resolveBranch, tryGit } from "../core/git.js";
 import { buildPrompt, repoRules } from "../core/prompt.js";
 import { latestArtifact, latestFailureFeedback, parseRuns } from "../core/record.js";
 
@@ -92,7 +92,7 @@ export function route(opts: RouteOptions): void {
 
   rmSync(RUN_DIR, { recursive: true, force: true });
   mkdirSync(RUN_DIR, { recursive: true });
-  excludeRunDir();
+  excludeTaskrailDir();
 
   const isTaskrailComment = (body: string) => parseRuns([{ id: 0, author: "", body, createdAt: "" }]).length > 0;
   const humanComments = comments.filter((c) => !isTaskrailComment(c.body) && !ctx.project.bot_logins.includes(c.author));

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,9 +48,19 @@ describe("init", () => {
     init({ platform: "github", owner: "acme", ref: "v1", ...opts });
   };
 
-  it("既定ではワークフロー1つだけを置き、CI の名前を埋める", () => {
-    const d = repo({ "ci.yml": "name: Build\non: pull_request\njobs: {}\n" });
+  it("既定ではリポジトリに何も置かず、.taskrail/ を .git/info/exclude で除外する", () => {
+    const d = repo();
+    execFileSync("git", ["init", "-q"], { cwd: d });
     run(d);
+    expect(existsSync(join(d, ".github/workflows/taskrail.yml"))).toBe(false);
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: d, encoding: "utf8" })).toBe("");
+    expect(readFileSync(join(d, ".git/info/exclude"), "utf8").split("\n")).toContain(".taskrail/");
+    run(d); // 2回実行しても重複して追記しない
+    expect(readFileSync(join(d, ".git/info/exclude"), "utf8").match(/^\.taskrail\/$/gm)).toHaveLength(1);
+  });
+  it("--ci でワークフロー1つだけを置き、CI の名前を埋める", () => {
+    const d = repo({ "ci.yml": "name: Build\non: pull_request\njobs: {}\n" });
+    run(d, { ci: true });
     const wf = readFileSync(join(d, ".github/workflows/taskrail.yml"), "utf8");
     expect(wf).not.toMatch(/\{\{[A-Z_]+\}\}/);
     expect(wf).toContain("acme/taskrail/.github/workflows/route.yml@v1");
@@ -68,7 +79,7 @@ describe("init", () => {
   });
   it("CI が見つからなければ \"CI\" を入れる", () => {
     const d = repo();
-    run(d);
+    run(d, { ci: true });
     expect(readFileSync(join(d, ".github/workflows/taskrail.yml"), "utf8")).toContain('workflows: ["CI"]');
   });
 });
