@@ -86,6 +86,8 @@ jobs:
       - name: ${{ inputs.command }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          TASKRAIL_CONFIG: ${{ vars.TASKRAIL_CONFIG }}
+          TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
           BRANCH: ${{ inputs.branch }}
           TO: ${{ inputs.to }}
           FROM: ${{ inputs.from }}
