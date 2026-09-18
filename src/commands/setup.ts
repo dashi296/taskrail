@@ -146,16 +146,27 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
       const labels = new Set(platform.listLabels());
       const missing = [...flow.stages.map((s) => flowLabel(flow, s.id)), flow.blocked_label, "ai::ok", "ai::no"].filter((l) => !labels.has(l));
       add("ラベル", missing.length === 0, `不足: ${missing.join(", ")} → taskrail labels sync`);
-      const names = (kind: string) => new Set(sh("gh", [kind, "list", "--json", "name", "--jq", ".[].name"]).split("\n"));
-      const secrets = names("secret");
+      const repoArgs = opts.repo ? ["-R", opts.repo] : [];
+      const api = (path: string) => `repos/${opts.repo ?? "{owner}/{repo}"}/${path}`;
+      const lines = (out: string | null) => (out ?? "").split("\n").filter(Boolean);
+      const names = (kind: string) => new Set(lines(sh("gh", [kind, "list", ...repoArgs, "--json", "name", "--jq", ".[].name"])));
+      // Organization の Secrets のうち、このリポジトリから使えるもの。個人リポジトリでは取得できない(422)ので空とみなす。
+      const orgSecrets = lines(trySh("gh", ["api", api("actions/organization-secrets"), "--jq", ".secrets[].name"]));
+      const secrets = new Set([...names("secret"), ...orgSecrets]);
       for (const s of ["ANTHROPIC_API_KEY", "TASKRAIL_APP_ID", "TASKRAIL_APP_PRIVATE_KEY"]) {
         add(`Secret ${s}`, secrets.has(s), "リポジトリまたは Organization の Secrets に設定してください");
       }
       const enabled = names("variable").has("TASKRAIL_ENABLED");
       add("変数 TASKRAIL_ENABLED(キルスイッチ)", enabled ? true : "warn", '未設定は有効扱いです。止めるときは "false" を設定します');
       const base = platform.defaultBranch();
-      const prot = trySh("gh", ["api", `repos/{owner}/{repo}/branches/${base}/protection`, "--jq", ".url"]);
-      add(`ブランチ保護(${base})`, prot !== null, "AIのトークンで直接 push・マージできないよう、保護を必須にしてください");
+      const classic = shResult("gh", ["api", api(`branches/${base}/protection`), "--jq", ".url"]);
+      const rules = shResult("gh", ["api", api(`rules/branches/${base}`), "--jq", ".[].type"]);
+      const prot = branchProtection({
+        classic: classic.ok,
+        ruleTypes: lines(rules.out),
+        unavailable: [classic.err, rules.err].some((e) => /Upgrade to GitHub Pro|make this repository public/i.test(e)),
+      });
+      add(`ブランチ保護(${base})`, prot.ok, prot.hint);
     } catch (e) {
       add("GitHub への接続", false, (e as Error).message);
     }
@@ -185,6 +196,33 @@ export function validate(opts: { flow?: string | boolean; result?: string; agent
     for (const p of problems) console.error(`✘ ${p}`);
     process.exitCode = 1;
   } else console.log(`✔ フロー定義は有効です(${flow.stages.map((s) => s.id).join(" → ")})`);
+}
+
+/**
+ * 既定ブランチが保護されているかの判定。classic な branch protection か、PR を必須にする ruleset のどちらかがあれば保護あり。
+ * プランの制約で使えない場合も、保護がないことに変わりはないので不合格のまま、ヒントだけ変える。
+ */
+export function branchProtection(p: { classic: boolean; ruleTypes: string[]; unavailable: boolean }): { ok: boolean; hint: string } {
+  if (p.classic || p.ruleTypes.includes("pull_request")) return { ok: true, hint: "" };
+  if (p.unavailable) {
+    return {
+      ok: false,
+      hint: "このリポジトリのプランではブランチ保護を使えません。public にするか、GitHub Pro / Team 以上が必要です",
+    };
+  }
+  return {
+    ok: false,
+    hint: "AIのトークンで直接 push・マージできないよう、保護(branch protection、または PR を必須にする ruleset)を設定してください",
+  };
+}
+
+function shResult(cmd: string, args: string[]): { ok: boolean; out: string; err: string } {
+  try {
+    return { ok: true, out: sh(cmd, args), err: "" };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string };
+    return { ok: false, out: String(err.stdout ?? ""), err: String(err.stderr ?? "") };
+  }
 }
 
 function sh(cmd: string, args: string[]): string {
