@@ -75,7 +75,8 @@ taskrail init --owner <your-org> --ref v0 --ci     # CI(GitHub Actions)で自動
 この状態では、[ローカルで1工程ずつ回す](#ローカルで1工程ずつ回す)方法で使えます。
 
 ラベルの変更で自動的にエージェントを動かすには、`--ci` で `.github/workflows/taskrail.yml` を置きます。GitHub Actions はリポジトリにコミットされたワークフローしか起動しないため、自動実行にはこの1ファイルが必要です。
-`workflow_run` が対象にする CI の名前は、既存の CI ワークフローから自動で入ります。
+`workflow_run` が対象にする CI の名前は、既存の CI ワークフローのうち `pull_request` で起動するものから自動で入ります。
+CI が複数あっても、作業ブランチの検査がすべて成功してから Verify に進みます。
 
 必要なものだけ追加で置けます。
 
@@ -112,6 +113,7 @@ protected_paths: [".github/**", "taskrail.yml", "CODEOWNERS", "db/migrations/**"
 wip_limit: 2
 ```
 
+`protected_paths` に何を書いても、ルール文書(`**/CLAUDE.md`、`**/AGENTS.md`、`docs/constitution.md`)と `taskrail.yml` は常に保護されます。
 `bot_logins`(Issue コメント内の記録を信頼する投稿者)は、Actions では GitHub App から自動で決まります。
 設定をリポジトリ変数に置くと、変更は PR レビューを通りません。レビューで管理したい場合は `--config` で `taskrail.yml` を置きます。
 
@@ -164,7 +166,7 @@ DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まず
 
 - 列を動かしても次の工程は自動では起動しません。工程ごとに実行し直します。
 - 人間の操作(仕様・計画の承認)はラベルを手で付け替えます。
-- AIを使わない遷移はコマンドで行います。ready → doing は `taskrail dispatch`、CI 成功後の doing → verify は `taskrail advance --branch <作業ブランチ> --from doing --to verify` です。
+- AIを使わない遷移はコマンドで行います。ready → doing は `taskrail dispatch`、CI 成功後の doing → verify は `taskrail advance --branch <作業ブランチ> --from doing --to verify --require-checks` です(`--require-checks` は、ブランチの検査がすべて成功していなければ進めません)。
 - `--ci` でワークフローを置いている場合は、Actions が同時に動かないよう、リポジトリ変数 `TASKRAIL_ENABLED` を `false` にしておきます。
 
 ## 改善の回し方

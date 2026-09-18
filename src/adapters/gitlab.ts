@@ -1,4 +1,4 @@
-import type { Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
+import type { ChecksState, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
 
 /**
  * GitLab アダプタ(未実装の雛形)。
@@ -38,4 +38,5 @@ export class GitLab implements Platform {
   }
   listReviewFeedback(_pr: number): string[] { return this.todo("listReviewFeedback"); }
   listLabelEvents(_n: number): LabelEvent[] { return this.todo("listLabelEvents"); }
+  branchChecks(_branch: string): ChecksState { return this.todo("branchChecks"); }
 }

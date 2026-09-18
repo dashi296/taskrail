@@ -1,4 +1,4 @@
-import { packageVersion } from "../core/config.js";
+import { packageVersion, protectedPaths } from "../core/config.js";
 import { type Ctx, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { decide, getStage, sizeOf } from "../core/flow.js";
 import { changedFilesSince, commitCountSince, dirtyFiles, git, matchProtected, resolveBranch } from "../core/git.js";
@@ -47,7 +47,7 @@ export function apply(opts: ApplyOptions): void {
   }
   if (!violation && stage.mode === "write" && status === "pass") {
     const base = `origin/${ctx.platform.defaultBranch()}`;
-    const protectedHit = matchProtected(changedFilesSince(base), ctx.project.protected_paths);
+    const protectedHit = matchProtected(changedFilesSince(base), protectedPaths(ctx.project));
     const uncommitted = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
     if (protectedHit.length) violation = `保護対象のファイルが変更されました: ${protectedHit.slice(0, 5).join(", ")}`;
     else if (uncommitted.length) violation = `コミットされていない変更があります: ${uncommitted.slice(0, 5).join(", ")}`;
