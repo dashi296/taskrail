@@ -35,6 +35,8 @@ export type ChecksState = "success" | "pending" | "failure";
 /** CI の実行(GitHub Actions のワークフロー実行など)。 */
 export interface CiRun {
   name: string;
+  /** 実行のきっかけになったイベント(pull_request、push など)。 */
+  event: string;
   status: string;
   conclusion: string | null;
   createdAt: string;

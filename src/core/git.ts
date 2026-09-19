@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 
 /**
  * git を実行する。作業ツリーはエージェントが触った後のものなので、リポジトリに仕込まれた hook や fsmonitor が
@@ -13,7 +13,7 @@ export function git(args: string[], cwd = process.cwd()): string {
 /** 出力を加工せずに返す(先頭の空白や NUL 区切りに意味がある出力用)。 */
 function gitRaw(args: string[], cwd: string): string {
   const hardened = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args];
-  return execFileSync("git", hardened, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return execFileSync("git", hardened, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
 }
 
 export function tryGit(args: string[], cwd = process.cwd()): string | null {
@@ -92,6 +92,52 @@ export function dirtyFiles(cwd = process.cwd()): string[] {
 export function changedFilesSince(base: string, cwd = process.cwd()): string[] {
   const out = git(["diff", "--no-ext-diff", "--name-only", "--no-renames", `${base}...HEAD`], cwd);
   return out.split("\n").filter((l) => l.trim());
+}
+
+/**
+ * base から HEAD までの変更のうち、保護対象に触れるもの。git が失敗したら例外。
+ * ファイル名の照合だけでは、シンボリックリンクで保護対象を差し替えられるため、リンクも見る。
+ * - シンボリックリンクの追加・変更・削除は、それ自体を保護対象への変更とみなす。
+ * - 既存のリンクのリンク先が変更されたら、リンクの名前でも照合する(CLAUDE.md -> docs/rules.md など)。
+ * - ディレクトリそのもの(`.claude`)も、`.claude/**` に一致するとみなす。
+ */
+export function protectedChanges(base: string, globs: string[], cwd = process.cwd()): string[] {
+  const isProtected = (p: string) => matchProtected([p, `${p}/_`], globs).length > 0;
+  const hits = new Set<string>();
+  const changed: string[] = [];
+  // --raw -z: ":旧モード 新モード 旧SHA 新SHA 状態" と パス が NUL で交互に並ぶ(--no-renames なのでパスは1つ)。
+  const raw = gitRaw(["diff", "--no-ext-diff", "--raw", "-z", "--no-renames", "--no-abbrev", `${base}...HEAD`], cwd).split("\0");
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const meta = raw[i]!;
+    const path = raw[i + 1]!;
+    if (!meta.startsWith(":")) break;
+    const [oldMode, newMode] = meta.slice(1).split(" ");
+    changed.push(path);
+    if (oldMode === SYMLINK || newMode === SYMLINK) hits.add(`${path}(シンボリックリンク)`);
+    else if (isProtected(path)) hits.add(path);
+  }
+  for (const link of symlinks("HEAD", cwd)) {
+    for (const f of changed) {
+      if (f !== link.target && !f.startsWith(`${link.target}/`)) continue;
+      const alias = link.path + f.slice(link.target.length);
+      if (isProtected(alias)) hits.add(`${f}(${alias} のリンク先)`);
+    }
+  }
+  return [...hits];
+}
+
+const SYMLINK = "120000";
+
+/** rev に含まれるシンボリックリンクと、リポジトリ内でのリンク先。リポジトリの外を指すものは除く。 */
+function symlinks(rev: string, cwd: string): { path: string; target: string }[] {
+  const links: { path: string; target: string }[] = [];
+  for (const entry of gitRaw(["ls-tree", "-r", "-z", "--full-tree", rev], cwd).split("\0")) {
+    const m = /^(\d+) \w+ ([0-9a-f]+)\t(.+)$/s.exec(entry);
+    if (!m || m[1] !== SYMLINK) continue;
+    const target = posix.normalize(posix.join(posix.dirname(m[3]!), gitRaw(["cat-file", "blob", m[2]!], cwd)));
+    if (!posix.isAbsolute(target) && !target.startsWith("../") && target !== "..") links.push({ path: m[3]!, target: target.replace(/\/$/, "") });
+  }
+  return links;
 }
 
 /** base に含まれない HEAD のコミット数。git が失敗したら例外。 */

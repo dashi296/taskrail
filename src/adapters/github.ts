@@ -163,10 +163,10 @@ export class GitHub implements Platform {
   }
 
   ciRuns(sha: string): CiRun[] {
-    return this.list<{ name: string; status: string; conclusion: string | null; created_at: string }>(
+    return this.list<{ name: string; event: string; status: string; conclusion: string | null; created_at: string }>(
       `actions/runs?head_sha=${sha}&per_page=100`,
       ".workflow_runs[]",
-    ).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, createdAt: r.created_at }));
+    ).map((r) => ({ name: r.name, event: r.event, status: r.status, conclusion: r.conclusion, createdAt: r.created_at }));
   }
 }
 

@@ -1,7 +1,8 @@
 import { packageVersion, protectedPaths } from "../core/config.js";
-import { type Ctx, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
-import { decide, getStage, sizeOf } from "../core/flow.js";
-import { changedFilesSince, commitCountSince, dirtyFiles, fetchCommit, git, matchProtected, pushBranch, resolveBranch } from "../core/git.js";
+import type { Issue } from "../adapters/types.js";
+import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
+import { currentStage, decide, getStage, sizeOf } from "../core/flow.js";
+import { commitCountSince, dirtyFiles, fetchCommit, git, protectedChanges, pushBranch, resolveBranch } from "../core/git.js";
 import { countRework, parseRuns, renderComment, type RunRecord } from "../core/record.js";
 import { type AgentResult, combineStatus, readResult } from "../core/result.js";
 import { DIFF_AGENTS, RUN_DIR } from "./route.js";
@@ -19,9 +20,13 @@ export interface ApplyOptions {
  * 書き込みはすべてここに集約する。エージェント自身は Issue にもラベルにも触れない。
  */
 export function apply(opts: ApplyOptions): void {
+  if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
   const ctx = loadCtx(opts);
   const stage = getStage(ctx.flow, opts.stage);
   const issue = ctx.platform.getIssue(Number(opts.issue));
+  // エージェントの実行中に人間が列を戻す・閉じるなどした場合、古い実行の結果で上書きしない。
+  const stale = staleReason(ctx, issue, stage.id);
+  if (stale) return log(`#${issue.number}: ${stale}。この実行の結果は反映しません`);
 
   // 1. 結果ファイルの検証。前のエージェントが不合格なら、後続は実行されていないので読まない。
   const results: AgentResult[] = [];
@@ -69,7 +74,7 @@ export function apply(opts: ApplyOptions): void {
   if (!violation && stage.mode === "write" && status === "pass") {
     violation = check(() => {
       const base = remoteSha(ctx.platform.defaultBranch());
-      const protectedHit = matchProtected(changedFilesSince(base), protectedPaths(ctx.project));
+      const protectedHit = protectedChanges(base, protectedPaths(ctx.project));
       const uncommitted = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
       if (protectedHit.length) return `保護対象のファイルが変更されました: ${protectedHit.slice(0, 5).join(", ")}`;
       if (uncommitted.length) return `コミットされていない変更があります: ${uncommitted.slice(0, 5).join(", ")}`;
@@ -77,6 +82,8 @@ export function apply(opts: ApplyOptions): void {
       return null;
     });
     if (!violation && !opts.dryRun) {
+      const nowStale = staleReason(ctx, ctx.platform.getIssue(issue.number), stage.id);
+      if (nowStale) return log(`#${issue.number}: ${nowStale}。この実行の結果は反映しません`);
       // push や PR の作成に失敗しても、記録を残さずに終わらせない。
       violation = check(() => {
         prUrl = publish(ctx, issue.number, issue.title, results[0]!);
@@ -115,6 +122,8 @@ export function apply(opts: ApplyOptions): void {
   }
 
   // 4. 書き込み。コメント → 補助ラベル → 列の移動、の順。列の移動が次のイベントを発火させる。
+  const nowStale = staleReason(ctx, ctx.platform.getIssue(issue.number), stage.id);
+  if (nowStale) return log(`#${issue.number}: ${nowStale}。この実行の結果は反映しません`);
   ctx.platform.addComment(issue.number, body);
   applyHintLabels(ctx, issue.number, issue.labels, violation ? [] : results);
   if (decision.addBlocked) ctx.platform.addLabels(issue.number, [ctx.flow.blocked_label]);
@@ -122,6 +131,15 @@ export function apply(opts: ApplyOptions): void {
 
   log(`#${issue.number} ${stage.id}: ${rec.status} → ${decision.to ?? "(移動なし)"}${decision.addBlocked ? " [blocked]" : ""}`);
   setOutputs({ status: rec.status, to: decision.to ?? "", blocked: decision.addBlocked });
+}
+
+/** この実行の結果を反映してよい状態でなければ、その理由。 */
+export function staleReason(ctx: Ctx, issue: Issue, stageId: string): string | null {
+  if (issue.state !== "open") return "Issue が閉じられています";
+  if (issue.labels.includes(ctx.flow.blocked_label)) return `${ctx.flow.blocked_label} が付いています`;
+  const current = currentStage(ctx.flow, issue.labels)?.id;
+  if (current !== stageId) return `列が ${current ?? "(1つに定まらない)"} に変わっています(実行時: ${stageId})`;
+  return null;
 }
 
 /** size:: / ai:: は、まだ付いていないときだけAIの提案を採用する。人間が付けたものは上書きしない。 */
