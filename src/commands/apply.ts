@@ -1,10 +1,10 @@
 import { packageVersion, protectedPaths } from "../core/config.js";
 import { type Ctx, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { decide, getStage, sizeOf } from "../core/flow.js";
-import { changedFilesSince, commitCountSince, dirtyFiles, git, matchProtected, resolveBranch } from "../core/git.js";
+import { changedFilesSince, commitCountSince, dirtyFiles, fetchCommit, git, matchProtected, resolveBranch } from "../core/git.js";
 import { countRework, parseRuns, renderComment, type RunRecord } from "../core/record.js";
 import { type AgentResult, combineStatus, readResult } from "../core/result.js";
-import { RUN_DIR } from "./route.js";
+import { DIFF_AGENTS, RUN_DIR } from "./route.js";
 
 export interface ApplyOptions {
   issue: string;
@@ -41,18 +41,45 @@ export function apply(opts: ApplyOptions): void {
   let prUrl: string | undefined;
   const status = results.length ? combineStatus(results.map((r) => r.status)) : "fail";
 
+  // 比較の基準は API で得たリモートの SHA。git の失敗は違反として扱う(検査を素通りさせない)。
+  const check = (fn: () => string | null): string | null => {
+    try {
+      return fn();
+    } catch (e) {
+      return `検査を実行できませんでした: ${(e as Error).message.split("\n")[0]}`;
+    }
+  };
+  const remoteSha = (branch: string): string => {
+    const sha = ctx.platform.branchHead(branch);
+    if (!sha) throw new Error(`リモートのブランチ ${branch} がありません`);
+    return fetchCommit(sha);
+  };
   if (!violation && stage.mode === "read") {
-    const dirty = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
-    if (dirty.length) violation = `読み取り専用の工程でファイルが変更されました: ${dirty.slice(0, 5).join(", ")}`;
+    violation = check(() => {
+      const dirty = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
+      if (dirty.length) return `読み取り専用の工程でファイルが変更されました: ${dirty.slice(0, 5).join(", ")}`;
+      // コミットしてしまえば作業ツリーはきれいに見えるため、リモートにないコミットも検出する。
+      const onBranch = stage.agents.some((a) => DIFF_AGENTS.has(a));
+      const ref = onBranch ? resolveBranch(ctx.project.branch_prefix, issue.number, issue.title) : ctx.platform.defaultBranch();
+      if (commitCountSince(remoteSha(ref)) > 0) return "読み取り専用の工程でコミットが作られました";
+      return null;
+    });
   }
+  let head: string | undefined;
   if (!violation && stage.mode === "write" && status === "pass") {
-    const base = `origin/${ctx.platform.defaultBranch()}`;
-    const protectedHit = matchProtected(changedFilesSince(base), protectedPaths(ctx.project));
-    const uncommitted = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
-    if (protectedHit.length) violation = `保護対象のファイルが変更されました: ${protectedHit.slice(0, 5).join(", ")}`;
-    else if (uncommitted.length) violation = `コミットされていない変更があります: ${uncommitted.slice(0, 5).join(", ")}`;
-    else if (commitCountSince(base) === 0) violation = "pass と報告されましたが、コミットがありません";
-    else if (!opts.dryRun) prUrl = publish(ctx, issue.number, issue.title, results[0]!);
+    violation = check(() => {
+      const base = remoteSha(ctx.platform.defaultBranch());
+      const protectedHit = matchProtected(changedFilesSince(base), protectedPaths(ctx.project));
+      const uncommitted = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
+      if (protectedHit.length) return `保護対象のファイルが変更されました: ${protectedHit.slice(0, 5).join(", ")}`;
+      if (uncommitted.length) return `コミットされていない変更があります: ${uncommitted.slice(0, 5).join(", ")}`;
+      if (commitCountSince(base) === 0) return "pass と報告されましたが、コミットがありません";
+      return null;
+    });
+    if (!violation && !opts.dryRun) {
+      prUrl = publish(ctx, issue.number, issue.title, results[0]!);
+      head = git(["rev-parse", "HEAD"]);
+    }
   }
 
   // 3. 次の列を決める。
@@ -72,7 +99,7 @@ export function apply(opts: ApplyOptions): void {
     blocked: decision.addBlocked,
     version: packageVersion(),
     at: new Date().toISOString(),
-    ...(prUrl ? { branch: git(["rev-parse", "--abbrev-ref", "HEAD"]) } : {}),
+    ...(prUrl && head ? { branch: git(["rev-parse", "--abbrev-ref", "HEAD"]), sha: head } : {}),
   };
   // 違反があった実行の成果物は、次工程に引き継がせない。
   const shown = violation ? results.map(({ artifact: _dropped, ...r }) => r) : results;

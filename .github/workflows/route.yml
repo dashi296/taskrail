@@ -55,11 +55,28 @@ jobs:
           private-key: ${{ secrets.TASKRAIL_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
+      # エージェントに渡す読み取り専用のトークン。エージェントは Issue・ラベル・PR に書き込めず、push もできない。
+      # 書き込み用のトークン(steps.app)は route と apply の step の env にだけ渡す。
+      - name: エージェント用の読み取り専用トークンを発行
+        id: agent_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.TASKRAIL_APP_ID }}
+          private-key: ${{ secrets.TASKRAIL_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+          permission-metadata: read
+
+      # persist-credentials: false … トークンを .git/config に残さない(エージェントが読めてしまうため)。
       - name: 対象リポジトリを取得
         uses: actions/checkout@v4
         with:
           token: ${{ steps.app.outputs.token }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: taskrail を取得
         uses: actions/checkout@v4
@@ -68,6 +85,7 @@ jobs:
           ref: ${{ inputs.taskrail_ref }}
           token: ${{ steps.app.outputs.token }}
           path: .taskrail/src
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -89,6 +107,12 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           TASKRAIL_CONFIG: ${{ inputs.config }}
           TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
+          # git の認証はこの step の間だけ、この環境変数から与える(リポジトリの credential.helper は無効にする)。
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: credential.helper
+          GIT_CONFIG_VALUE_0: ""
+          GIT_CONFIG_KEY_1: credential.helper
+          GIT_CONFIG_VALUE_1: '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
         run: $TASKRAIL route --event "$GITHUB_EVENT_PATH"
 
       - name: エージェント 1
@@ -96,7 +120,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ steps.app.outputs.token }}
+          github_token: ${{ steps.agent_token.outputs.token }}
           # 列を動かすのは taskrail の App。route が bot_logins と照合済みの送信者だけを許可する。
           allowed_bots: ${{ steps.route.outputs.allowed_bots }}
           prompt: |
@@ -118,7 +142,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ steps.app.outputs.token }}
+          github_token: ${{ steps.agent_token.outputs.token }}
           # 列を動かすのは taskrail の App。route が bot_logins と照合済みの送信者だけを許可する。
           allowed_bots: ${{ steps.route.outputs.allowed_bots }}
           prompt: |
@@ -129,10 +153,22 @@ jobs:
             --allowedTools "${{ steps.route.outputs.allowed_tools }}"
 
       # エージェントが失敗・タイムアウトしても必ず実行し、結果の不備として Issue に記録する。
+      #
+      # 注意: エージェントは同じ job の中で Bash(と sudo)を使えるため、この step の実行環境を完全には守れない。
+      # apply を別の job に分ける対策は docs/security.md の「残っているリスク」を参照。
       - name: apply(検証して反映する)
         if: always() && steps.route.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           TASKRAIL_CONFIG: ${{ inputs.config }}
           TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
+          # エージェントが書き換えられるグローバル設定・システム設定を読まない
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+          # git の認証はこの step の間だけ、この環境変数から与える(リポジトリの credential.helper は無効にする)。
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: credential.helper
+          GIT_CONFIG_VALUE_0: ""
+          GIT_CONFIG_KEY_1: credential.helper
+          GIT_CONFIG_VALUE_1: '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
         run: $TASKRAIL apply --issue "${{ steps.route.outputs.issue }}" --stage "${{ steps.route.outputs.stage }}"

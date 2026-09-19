@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { ChecksState, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
+import type { ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
 
 /**
  * GitHub アダプタ。`gh` CLI 経由で API を呼ぶ。
@@ -119,14 +119,23 @@ export class GitHub implements Platform {
   }
 
   listReviewFeedback(pr: number): string[] {
+    // 実装エージェントへの指示になるため、write 以上の権限を持つ人のものだけを渡す。
+    const perms = new Map<string, boolean>();
+    const canWrite = (login: string | undefined) => {
+      if (!login) return false;
+      if (!perms.has(login)) perms.set(login, ["admin", "write"].includes(this.getPermission(login)));
+      return perms.get(login)!;
+    };
     const reviews = this.list<{ state: string; body: string | null; user: { login: string } | null }>(
       `pulls/${pr}/reviews?per_page=100`,
     )
-      .filter((r) => r.state === "CHANGES_REQUESTED" && r.body)
-      .map((r) => `[${r.user?.login ?? "?"}] ${r.body}`);
+      .filter((r) => r.state === "CHANGES_REQUESTED" && r.body && canWrite(r.user?.login))
+      .map((r) => `[${r.user!.login}] ${r.body}`);
     const inline = this.list<{ path: string; line: number | null; body: string; user: { login: string } | null }>(
       `pulls/${pr}/comments?per_page=100`,
-    ).map((c) => `[${c.user?.login ?? "?"}] ${c.path}${c.line ? `:${c.line}` : ""} — ${c.body}`);
+    )
+      .filter((c) => canWrite(c.user?.login))
+      .map((c) => `[${c.user!.login}] ${c.path}${c.line ? `:${c.line}` : ""} — ${c.body}`);
     return [...reviews, ...inline];
   }
 
@@ -138,11 +147,26 @@ export class GitHub implements Platform {
       .map((e) => ({ label: e.label!.name, action: e.event as "labeled" | "unlabeled", at: e.created_at }));
   }
 
-  branchChecks(branch: string): ChecksState {
-    const sha = this.api(`branches/${encodeURIComponent(branch)}`, { jq: ".commit.sha" }).trim();
+  branchHead(branch: string): string | null {
+    try {
+      return this.api(`branches/${encodeURIComponent(branch)}`, { jq: ".commit.sha" }).trim() || null;
+    } catch (e) {
+      if (/404|Branch not found/i.test(String(e))) return null;
+      throw e;
+    }
+  }
+
+  commitChecks(sha: string): ChecksState {
     const runs = this.list<RawCheckRun>(`commits/${sha}/check-runs?per_page=100`, ".check_runs[]");
     const status = JSON.parse(this.api(`commits/${sha}/status`, { jq: "{state, total_count}" })) as RawCombinedStatus;
     return summarizeChecks(runs, status);
+  }
+
+  ciRuns(sha: string): CiRun[] {
+    return this.list<{ name: string; status: string; conclusion: string | null; created_at: string }>(
+      `actions/runs?head_sha=${sha}&per_page=100`,
+      ".workflow_runs[]",
+    ).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, createdAt: r.created_at }));
   }
 }
 

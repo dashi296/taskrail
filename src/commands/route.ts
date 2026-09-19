@@ -7,7 +7,8 @@ import { buildPrompt, repoRules } from "../core/prompt.js";
 import { latestArtifact, latestFailureFeedback, parseRuns } from "../core/record.js";
 
 export const RUN_DIR = ".taskrail/run";
-const DIFF_AGENTS = new Set(["verify-spec", "code-review"]);
+/** 作業ブランチの差分を見るエージェント(読み取り工程でも作業ブランチに切り替える)。 */
+export const DIFF_AGENTS = new Set(["verify-spec", "code-review"]);
 
 interface GhEvent {
   action?: string;
@@ -106,7 +107,11 @@ export function route(opts: RouteOptions): void {
     branch,
     agents: stage.agents.join(","),
     allowed_bots: allowedBots(ctx.project.bot_logins),
-    allowed_tools: stage.mode === "write" ? "Read,Glob,Grep,Edit,Write,Bash" : "Read,Glob,Grep,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*)",
+    // 読み取り工程が書き込めるのは結果ファイルの置き場所だけ(Edit のパス指定は Write にも効く)。
+    allowed_tools:
+      stage.mode === "write"
+        ? "Read,Glob,Grep,Edit,Write,Bash"
+        : `Read,Glob,Grep,Edit(${RUN_DIR}/**),Bash(git diff:*),Bash(git log:*),Bash(git show:*)`,
   };
 
   stage.agents.forEach((agent, i) => {

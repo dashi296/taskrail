@@ -23,6 +23,8 @@ taskrail=(node "$root/dist/cli.js")
 
 git rev-parse --show-toplevel >/dev/null 2>&1 || die "導入先リポジトリの中で実行してください"
 [ -z "$(git status --porcelain -- . ':!.taskrail')" ] || die "作業ツリーに未コミットの変更があります"
+# 読み取り工程は「リモートにないコミット」を違反として扱うため、手元のブランチはリモートと揃えておく。
+[ "$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo 0)" = 0 ] || die "push していないコミットがあります"
 command -v claude >/dev/null || die "claude(Claude Code)が見つかりません"
 
 if [ -z "$stage" ]; then
@@ -61,6 +63,15 @@ run_agent() {
   local prompt="$1"
   echo "[local-run] エージェント: $(get "agent_$2")"
   # ユーザー設定(プラグイン・フック・MCP)を読み込まず、導入先リポジトリの設定だけで動かす。
+  # エージェントには gh と git の認証を渡さない(Issue への書き込みと push は apply だけが行う)。
+  # ただし手元の端末で動くため、~/.ssh などを読める。構造的に守りきれない点は docs/security.md を参照。
+  local sandbox_gh
+  sandbox_gh="$(mktemp -d)"
+  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u SSH_AUTH_SOCK \
+    GH_CONFIG_DIR="$sandbox_gh" \
+    GIT_TERMINAL_PROMPT=0 \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \
+    GIT_SSH_COMMAND="ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=/dev/null" \
   claude -p "$prompt を読み、その指示に正確に従ってください。指示はそのファイルと、リポジトリ内のルール文書だけです。" \
     --max-turns "$(get max_turns)" \
     --allowedTools "$(get allowed_tools)" \
@@ -68,6 +79,7 @@ run_agent() {
     --strict-mcp-config \
     --no-session-persistence \
     || echo "[local-run] エージェントが異常終了しました(apply が不備として記録します)" >&2
+  rm -rf "$sandbox_gh"
 }
 
 run_agent "$(get prompt_1)" 1
