@@ -36,7 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: taskrail-board-${{ github.event_name }}-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref || github.event.issue.number || 'all' }}
+      # 着手の判断(dispatch)は schedule と手動実行で同じ group にし、同時に走って WIP 上限を超えないようにする
+      group: taskrail-board-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'dispatch' || format('{0}-{1}', github.event_name, github.event.workflow_run.head_branch || github.event.pull_request.head.ref || github.event.issue.number) }}
       cancel-in-progress: false
     env:
       TASKRAIL_ENABLED: ${{ inputs.enabled }}
@@ -55,6 +56,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
 
       - name: taskrail を取得
         uses: actions/checkout@v4
@@ -63,6 +65,7 @@ jobs:
           ref: ${{ inputs.taskrail_ref }}
           token: ${{ steps.app.outputs.token }}
           path: .taskrail/src
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -96,7 +99,8 @@ jobs:
             pull_request_review)
               [ "$(jq -r .review.state "$ev")" = changes_requested ] || exit 0
               same_repo .pull_request.head.repo.full_name
-              $TASKRAIL advance --branch "$(jq -r .pull_request.head.ref "$ev")" --from review --to doing ;;
+              # 修正依頼を出した人に write 以上の権限がなければ動かさない
+              $TASKRAIL advance --branch "$(jq -r .pull_request.head.ref "$ev")" --from review --to doing --actor "$(jq -r .review.user.login "$ev")" ;;
             pull_request)
               [ "$(jq -r .pull_request.merged "$ev")" = true ] || exit 0
               same_repo .pull_request.head.repo.full_name

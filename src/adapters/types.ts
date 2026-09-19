@@ -29,8 +29,16 @@ export interface LabelEvent {
 
 export type Permission = "admin" | "write" | "read" | "none";
 
-/** ブランチの先頭コミットに付いた検査(CI)の総合結果。 */
+/** コミットに付いた検査(CI)の総合結果。 */
 export type ChecksState = "success" | "pending" | "failure";
+
+/** CI の実行(GitHub Actions のワークフロー実行など)。 */
+export interface CiRun {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  createdAt: string;
+}
 
 /**
  * GitHub と GitLab の差を吸収する層。
@@ -51,9 +59,13 @@ export interface Platform {
   defaultBranch(): string;
   findPullRequestByBranch(branch: string): PullRequest | null;
   createPullRequest(args: { head: string; base: string; title: string; body: string }): PullRequest;
-  /** 人間のレビューで付いた修正依頼の本文。 */
+  /** 人間のレビューで付いた修正依頼の本文。write 以上の権限を持つ人のものだけ。 */
   listReviewFeedback(pr: number): string[];
   listLabelEvents(n: number): LabelEvent[];
-  /** ブランチの先頭コミットの検査がすべて成功したか。CI が複数あるとき、1つの成功だけで先へ進めないために使う。 */
-  branchChecks(branch: string): ChecksState;
+  /** ブランチの先頭コミット。ブランチがなければ null。 */
+  branchHead(branch: string): string | null;
+  /** コミットの検査がすべて成功したか。CI が複数あるとき、1つの成功だけで先へ進めないために使う。 */
+  commitChecks(sha: string): ChecksState;
+  /** コミットに対する CI の実行。 */
+  ciRuns(sha: string): CiRun[];
 }

@@ -49,8 +49,14 @@ export function moveTo(ctx: Ctx, issue: Issue, stageId: string): void {
 export function trustedAuthors(project: Project, env: NodeJS.ProcessEnv = process.env): Set<string> {
   const author = env.TASKRAIL_RECORD_AUTHOR?.trim();
   if (author && !isLogin(author)) throw new Error(`TASKRAIL_RECORD_AUTHOR がログイン名として不正です: ${author}`);
-  return new Set([...project.bot_logins, ...(author ? [author] : [])]);
+  const trusted = new Set([...project.bot_logins, ...(author ? [author] : [])]);
+  if (!trusted.size && !warnedNoTrusted) {
+    warnedNoTrusted = true;
+    log("警告: 記録を信頼する投稿者がいません(bot_logins、TASKRAIL_BOT_LOGIN、TASKRAIL_RECORD_AUTHOR が未設定)。Issue 上の記録は読みません");
+  }
+  return trusted;
 }
+let warnedNoTrusted = false;
 
 export function log(msg: string): void {
   console.error(`[taskrail] ${msg}`);

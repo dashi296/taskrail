@@ -33,10 +33,16 @@ describe("CI ワークフローの検出", () => {
       "d.yml": "name: D\non:\n  pull_request:\n    types: [opened, synchronize, labeled]\n    branches: ['**']\njobs: {}\n",
       "e.yml": "name: E\non:\n  pull_request:\n    paths: ['src/**']\njobs: {}\n",
     });
-    expect(detectCiWorkflows(d, "main")).toEqual(["D", "E"]);
+    // E は paths で絞り込まれていて、変更によっては起動しないため自動では選ばない
+    expect(detectCiWorkflows(d, "main")).toEqual(["D"]);
     const all = analyzeCiWorkflows(d, "main");
     expect(all.find((w) => w.name === "A")?.reason).toContain("release");
     expect(all.find((w) => w.name === "E")?.pathFiltered).toBe(true);
+  });
+  it("否定パターンを含む branches は解釈せず、自動では選ばない", () => {
+    const d = repo({ "n.yml": "name: N\non:\n  pull_request:\n    branches: ['**', '!main']\njobs: {}\n" });
+    expect(detectCiWorkflows(d, "main")).toEqual([]);
+    expect(analyzeCiWorkflows(d, "main")[0]?.reason).toContain("否定パターン");
   });
   it("name がなければファイルのパスを名前にする(GitHub と同じ)", () => {
     expect(detectCiWorkflows(repo({ "test.yml": "on: pull_request\njobs: {}\n" }))).toEqual([".github/workflows/test.yml"]);
