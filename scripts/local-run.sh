@@ -24,7 +24,9 @@ taskrail=(node "$root/dist/cli.js")
 git rev-parse --show-toplevel >/dev/null 2>&1 || die "導入先リポジトリの中で実行してください"
 [ -z "$(git status --porcelain -- . ':!.taskrail')" ] || die "作業ツリーに未コミットの変更があります"
 # 読み取り工程は「リモートにないコミット」を違反として扱うため、手元のブランチはリモートと揃えておく。
-[ "$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo 0)" = 0 ] || die "push していないコミットがあります"
+# 追跡先のないブランチでも見逃さないよう、どのリモートブランチにも含まれないコミットを数える。
+unpushed="$(git rev-list --count HEAD --not --remotes)" || die "push 済みかどうかを判定できません"
+[ "$unpushed" = 0 ] || die "push していないコミットがあります"
 command -v claude >/dev/null || die "claude(Claude Code)が見つかりません"
 
 if [ -z "$stage" ]; then

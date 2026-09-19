@@ -95,6 +95,9 @@ export function route(opts: RouteOptions): void {
   mkdirSync(RUN_DIR, { recursive: true });
   excludeTaskrailDir();
 
+  // 読み取り工程には Bash を渡さない(git diff --output= などで任意の場所に書けるため)。差分はここで書き出して渡す。
+  const diffFiles = base && stage.mode === "read" ? writeDiffFiles(base) : null;
+
   const isTaskrailComment = (body: string) => parseRuns([{ id: 0, author: "", body, createdAt: "" }]).length > 0;
   const humanComments = comments.filter((c) => !isTaskrailComment(c.body) && !ctx.project.bot_logins.includes(c.author));
 
@@ -107,11 +110,8 @@ export function route(opts: RouteOptions): void {
     branch,
     agents: stage.agents.join(","),
     allowed_bots: allowedBots(ctx.project.bot_logins),
-    // 読み取り工程が書き込めるのは結果ファイルの置き場所だけ(Edit のパス指定は Write にも効く)。
-    allowed_tools:
-      stage.mode === "write"
-        ? "Read,Glob,Grep,Edit,Write,Bash"
-        : `Read,Glob,Grep,Edit(${RUN_DIR}/**),Bash(git diff:*),Bash(git log:*),Bash(git show:*)`,
+    // 読み取り工程が書き込めるのは結果ファイルの置き場所だけ(Edit のパス指定は Write にも効く)。Bash は渡さない。
+    allowed_tools: stage.mode === "write" ? "Read,Glob,Grep,Edit,Write,Bash" : `Read,Glob,Grep,Edit(${RUN_DIR}/**)`,
   };
 
   stage.agents.forEach((agent, i) => {
@@ -128,6 +128,7 @@ export function route(opts: RouteOptions): void {
         plan: latestArtifact(comments, "plan", trusted),
         feedback,
         baseBranch: base,
+        diffFiles,
         rules,
       }),
     );
@@ -139,6 +140,15 @@ export function route(opts: RouteOptions): void {
   writeFileSync(join(RUN_DIR, "route.json"), JSON.stringify(outputs, null, 2));
   log(`#${issue.number} ${stage.id}: ${stage.agents.join(" → ")} を実行します`);
   setOutputs(outputs);
+}
+
+/** ベースブランチとの差分とコミットの一覧を RUN_DIR に書き出す。 */
+function writeDiffFiles(base: string): { patch: string; log: string } {
+  const files = { patch: join(RUN_DIR, "diff.patch"), log: join(RUN_DIR, "commits.txt") };
+  const run = (args: string[]) => tryGit(args) ?? `(git ${args[0]} に失敗しました)`;
+  writeFileSync(files.patch, run(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `origin/${base}...HEAD`]) + "\n");
+  writeFileSync(files.log, run(["log", "--no-color", "--stat", `origin/${base}..HEAD`]) + "\n");
+  return files;
 }
 
 /**

@@ -14,6 +14,8 @@ export interface PromptContext {
   plan: string | null;
   feedback: string[];
   baseBranch: string | null;
+  /** 読み取り工程向けに書き出した差分とコミットの一覧(読み取り工程は git を実行できない)。 */
+  diffFiles?: { patch: string; log: string } | null;
   rules: RepoRules;
 }
 
@@ -103,7 +105,14 @@ export function buildPrompt(ctx: PromptContext): string {
     parts.push(tag("feedback", ctx.feedback.join("\n\n---\n\n"), "差し戻しの指摘。これへの対応が最優先"));
   }
   if (needs.diff && ctx.baseBranch) {
-    parts.push(tag("diff", `git diff origin/${ctx.baseBranch}...HEAD で差分を確認してください。`));
+    parts.push(
+      tag(
+        "diff",
+        ctx.diffFiles
+          ? `ベースブランチ(origin/${ctx.baseBranch})との差分は ${ctx.diffFiles.patch}、コミットの一覧は ${ctx.diffFiles.log} にあります。Read で読んでください。`
+          : `git diff origin/${ctx.baseBranch}...HEAD で差分を確認してください。`,
+      ),
+    );
   }
   return parts.join("\n\n");
 }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,7 +11,7 @@ import { summarizeChecks } from "../src/adapters/github.js";
 import { ProjectSchema, protectedPaths } from "../src/core/config.js";
 import { trustedAuthors } from "../src/core/context.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
-import { branchName, changedFilesSince, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, remote, slugify } from "../src/core/git.js";
+import { branchName, changedFilesSince, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, protectedChanges, remote, slugify } from "../src/core/git.js";
 import { buildPrompt, repoRules } from "../src/core/prompt.js";
 import { countRework, implementedBranch, latestArtifact, latestFailureFeedback, parseRuns, renderComment, type RunRecord } from "../src/core/record.js";
 import { combineStatus, readResult } from "../src/core/result.js";
@@ -386,5 +386,53 @@ describe("apply の push 先", () => {
     expect(() => remote({ TASKRAIL_GIT_REMOTE: "https://x-access-token:t@github.com/o/r.git" })).toThrow(/不正/);
     expect(() => remote({ TASKRAIL_GIT_REMOTE: "--upload-pack=evil" })).toThrow(/不正/);
     expect(() => remote({ TASKRAIL_GIT_REMOTE: "ext::sh -c evil" })).toThrow(/不正/);
+  });
+});
+
+describe("シンボリックリンクによる保護パスの回避", () => {
+  const globs = protectedPaths(ProjectSchema.parse({}));
+  const repo = () => {
+    const d = mkdtempSync(join(tmpdir(), "taskrail-link-"));
+    const g = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: d, encoding: "utf8" });
+    g("init", "-q", "-b", "main");
+    return { d, g };
+  };
+  it("保護対象のディレクトリをリンクに差し替えたら検出する", () => {
+    const { d, g } = repo();
+    writeFileSync(join(d, "a"), "1\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    mkdirSync(join(d, "agent-config"));
+    writeFileSync(join(d, "agent-config", "settings.json"), "{}\n");
+    symlinkSync("agent-config", join(d, ".claude"));
+    g("add", "-A");
+    g("commit", "-qm", "x");
+    expect(protectedChanges("HEAD~1", globs, d)).toEqual([".claude(シンボリックリンク)", "agent-config/settings.json(.claude/settings.json のリンク先)"]);
+  });
+  it("既存のリンクのリンク先を変更したら、リンクの名前で検出する", () => {
+    const { d, g } = repo();
+    mkdirSync(join(d, "docs"));
+    writeFileSync(join(d, "docs", "rules.md"), "1\n");
+    symlinkSync("docs/rules.md", join(d, "CLAUDE.md"));
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    writeFileSync(join(d, "docs", "rules.md"), "2\n");
+    writeFileSync(join(d, "src.ts"), "x\n");
+    g("add", "-A");
+    g("commit", "-qm", "x");
+    expect(protectedChanges("HEAD~1", globs, d)).toEqual(["docs/rules.md(CLAUDE.md のリンク先)"]);
+  });
+  it("保護対象でない通常の変更は通し、ディレクトリそのものも保護対象として扱う", () => {
+    const { d, g } = repo();
+    writeFileSync(join(d, "a"), "1\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    writeFileSync(join(d, "a"), "2\n");
+    mkdirSync(join(d, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(d, ".github", "workflows", "ci.yml"), "on: push\n");
+    g("add", "-A");
+    g("commit", "-qm", "x");
+    expect(protectedChanges("HEAD~1", globs, d)).toEqual([".github/workflows/ci.yml"]);
+    expect(matchProtected([".claude/_"], globs)).toEqual([".claude/_"]);
   });
 });
