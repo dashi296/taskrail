@@ -11,7 +11,7 @@ import { summarizeChecks } from "../src/adapters/github.js";
 import { ProjectSchema, protectedPaths } from "../src/core/config.js";
 import { trustedAuthors } from "../src/core/context.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
-import { branchName, changedFilesSince, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, slugify } from "../src/core/git.js";
+import { branchName, changedFilesSince, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, remote, slugify } from "../src/core/git.js";
 import { buildPrompt, repoRules } from "../src/core/prompt.js";
 import { countRework, implementedBranch, latestArtifact, latestFailureFeedback, parseRuns, renderComment, type RunRecord } from "../src/core/record.js";
 import { combineStatus, readResult } from "../src/core/result.js";
@@ -378,3 +378,13 @@ describe("エージェントの出力による記録の偽造", () => {
   });
 });
 
+
+describe("apply の push 先", () => {
+  it("指定がなければ origin、指定があれば認証情報を含まない https の URL だけを受け付ける", () => {
+    expect(remote({})).toBe("origin");
+    expect(remote({ TASKRAIL_GIT_REMOTE: "https://github.com/o/r.git" })).toBe("https://github.com/o/r.git");
+    expect(() => remote({ TASKRAIL_GIT_REMOTE: "https://x-access-token:t@github.com/o/r.git" })).toThrow(/不正/);
+    expect(() => remote({ TASKRAIL_GIT_REMOTE: "--upload-pack=evil" })).toThrow(/不正/);
+    expect(() => remote({ TASKRAIL_GIT_REMOTE: "ext::sh -c evil" })).toThrow(/不正/);
+  });
+});

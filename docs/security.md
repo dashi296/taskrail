@@ -15,7 +15,7 @@ taskrail は、リポジトリへの書き込み権限と API キーを持つエ
 | 承認を飛ばす遷移(inbox → ready など) | 遷移を主体ごとに定義し、許可されていない遷移では起動しない | `core/flow.ts` |
 | Issue コメントに偽の仕様・実行記録を書き込む | マーカーは信頼する投稿者(Actions では App、ローカル実行では gh のログインユーザー)のコメントからだけ読む | `core/record.ts`、`core/context.ts` |
 | エージェントの出力(要約・質問・指摘など)に偽のマーカーを仕込み、実行記録や仕様を偽造する | 実行記録のマーカーはコメントの先頭だけを読む。成果物は最後のマーカーだけを読む。エージェント由来の文字列はすべて無害化する | `core/record.ts` |
-| エージェントが書き込み用の認証情報で、Issue やラベルに直接書き込む・push する | エージェントには読み取り専用の App トークンを渡し、checkout にトークンを残さない。ローカル実行では gh と git の認証を外して起動する | ワークフロー、`scripts/local-run.sh` |
+| エージェントが書き込み用の認証情報で、Issue やラベルに直接書き込む・push する | エージェントには読み取り専用の App トークンを渡し、checkout にトークンを残さない(claude-code-action はこのトークンを origin の URL に埋め込むため、エージェントからは読めるが、読み取り専用である)。apply は origin を使わず、URL を直接指定して push する。ローカル実行では gh と git の認証を外して起動する | ワークフロー、`scripts/local-run.sh` |
 | エージェントが `.git` の hook や設定、`origin/*` の ref を書き換えて、apply の検査を欺く | apply の git 操作では hook と fsmonitor を無効にする。比較の基準は API で取得した SHA。git の失敗は違反として扱う | `core/git.ts`、`commands/apply.ts` |
 | 読み取り専用の工程でコミットを作る・ほかのファイルを書く | 書き込めるのは結果ファイルの置き場所だけ。リモートにないコミットも違反として検出する | `commands/route.ts`、`commands/apply.ts` |
 | 権限のない人の修正依頼で列を戻し、その文面を実装エージェントに渡す | 修正依頼を出した人の write 権限を確認する。実装に渡すレビューは write 以上の人のものだけ | `commands/board.ts`、`adapters/github.ts` |

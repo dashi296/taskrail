@@ -105,8 +105,25 @@ export function commitCountSince(base: string, cwd = process.cwd()): number {
  */
 export function fetchCommit(sha: string, cwd = process.cwd()): string {
   if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`コミットの SHA が不正です: ${sha}`);
-  git(["fetch", "--no-tags", "--quiet", "origin", sha], cwd);
+  git(["fetch", "--no-tags", "--quiet", remote(), sha], cwd);
   return sha;
+}
+
+/** ブランチをリモートへ push する。 */
+export function pushBranch(branch: string, cwd = process.cwd()): void {
+  git(["push", remote(), `HEAD:refs/heads/${branch}`], cwd);
+}
+
+/**
+ * apply が push / fetch に使うリモート。CI では TASKRAIL_GIT_REMOTE に URL を与える。
+ * claude-code-action は origin の URL をエージェント用の(読み取り専用の)トークン入りに書き換えるため、
+ * origin のままだと認証がそちらに負け、push が拒否される。URL を直接渡せば、認証は credential.helper から得る。
+ */
+export function remote(env: NodeJS.ProcessEnv = process.env): string {
+  const url = env.TASKRAIL_GIT_REMOTE?.trim();
+  if (!url) return "origin";
+  if (!/^https:\/\/[^\s@/]+\/[^\s@]+$/.test(url)) throw new Error(`TASKRAIL_GIT_REMOTE が不正です(認証情報を含まない https の URL を指定してください): ${url}`);
+  return url;
 }
 
 /** 最小限の glob(`**`、`*`)。依存を増やさないための自前実装。 */

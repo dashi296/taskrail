@@ -165,6 +165,8 @@ jobs:
           # エージェントが書き換えられるグローバル設定・システム設定を読まない
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_NOSYSTEM: "1"
+          # claude-code-action が origin の URL をエージェント用トークン入りに書き換えるため、push 先は URL で直接渡す。
+          TASKRAIL_GIT_REMOTE: ${{ github.server_url }}/${{ github.repository }}.git
           # git の認証はこの step の間だけ、この環境変数から与える(リポジトリの credential.helper は無効にする)。
           GIT_CONFIG_COUNT: "2"
           GIT_CONFIG_KEY_0: credential.helper

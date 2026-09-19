@@ -1,7 +1,7 @@
 import { packageVersion, protectedPaths } from "../core/config.js";
 import { type Ctx, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { decide, getStage, sizeOf } from "../core/flow.js";
-import { changedFilesSince, commitCountSince, dirtyFiles, fetchCommit, git, matchProtected, resolveBranch } from "../core/git.js";
+import { changedFilesSince, commitCountSince, dirtyFiles, fetchCommit, git, matchProtected, pushBranch, resolveBranch } from "../core/git.js";
 import { countRework, parseRuns, renderComment, type RunRecord } from "../core/record.js";
 import { type AgentResult, combineStatus, readResult } from "../core/result.js";
 import { DIFF_AGENTS, RUN_DIR } from "./route.js";
@@ -42,11 +42,11 @@ export function apply(opts: ApplyOptions): void {
   const status = results.length ? combineStatus(results.map((r) => r.status)) : "fail";
 
   // 比較の基準は API で得たリモートの SHA。git の失敗は違反として扱う(検査を素通りさせない)。
-  const check = (fn: () => string | null): string | null => {
+  const check = (fn: () => string | null, failure = "検査を実行できませんでした"): string | null => {
     try {
       return fn();
     } catch (e) {
-      return `検査を実行できませんでした: ${(e as Error).message.split("\n")[0]}`;
+      return `${failure}: ${(e as Error).message.split("\n")[0]}`;
     }
   };
   const remoteSha = (branch: string): string => {
@@ -77,8 +77,12 @@ export function apply(opts: ApplyOptions): void {
       return null;
     });
     if (!violation && !opts.dryRun) {
-      prUrl = publish(ctx, issue.number, issue.title, results[0]!);
-      head = git(["rev-parse", "HEAD"]);
+      // push や PR の作成に失敗しても、記録を残さずに終わらせない。
+      violation = check(() => {
+        prUrl = publish(ctx, issue.number, issue.title, results[0]!);
+        head = git(["rev-parse", "HEAD"]);
+        return null;
+      }, "push または PR の作成に失敗しました");
     }
   }
 
@@ -134,7 +138,7 @@ function publish(ctx: Ctx, issue: number, title: string, result: AgentResult): s
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
   const expected = resolveBranch(ctx.project.branch_prefix, issue, title);
   if (branch !== expected) throw new Error(`作業ブランチが想定と違います(期待: ${expected}、実際: ${branch})`);
-  git(["push", "--set-upstream", "origin", branch]);
+  pushBranch(branch);
   const existing = ctx.platform.findPullRequestByBranch(branch);
   if (existing) return existing.url;
   const pr = ctx.platform.createPullRequest({
