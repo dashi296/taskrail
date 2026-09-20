@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { advanceIssue, checksPassed, missingCiRuns, recheckImplemented } from "../src/commands/board.js";
+import { staleReason } from "../src/commands/apply.js";
 import { renderComment, type RunRecord } from "../src/core/record.js";
 import { FakePlatform, fakeCtx } from "./fakes.js";
 
@@ -12,7 +13,13 @@ const record = (stage: string, status: RunRecord["status"], extra: Partial<RunRe
     errors: [],
     results: [],
   });
-const run = (name: string, conclusion: string | null, status = "completed", createdAt = "2026-01-01T00:00:00Z") => ({ name, status, conclusion, createdAt });
+const run = (name: string, conclusion: string | null, status = "completed", createdAt = "2026-01-01T00:00:00Z", event = "pull_request") => ({
+  name,
+  event,
+  status,
+  conclusion,
+  createdAt,
+});
 
 describe("CI 待ちのゲート(checksPassed / advance --require-checks / dispatch の再判定)", () => {
   let p: FakePlatform;
@@ -56,6 +63,21 @@ describe("CI 待ちのゲート(checksPassed / advance --require-checks / dispat
     p.runs.set(SHA, [run("CI", "success"), run("Integration", "failure")]);
     expect(passed(["CI", "Integration"])).toMatchObject({ ok: false });
   });
+  it("push で動いた同名の CI の成功で、PR で動いた CI の失敗を隠さない", () => {
+    p.runs.set(SHA, [
+      run("CI", "failure", "completed", "2026-01-01T00:00:00Z", "pull_request"),
+      run("CI", "success", "completed", "2026-01-01T01:00:00Z", "push"),
+    ]);
+    expect(passed()).toMatchObject({ ok: false });
+  });
+  it("検査を問い合わせている間にブランチが更新されたら進めない", () => {
+    const original = p.ciRuns.bind(p);
+    p.ciRuns = (sha: string) => {
+      p.heads.set("issue-1-x", "c".repeat(40));
+      return original(sha);
+    };
+    expect(passed()).toMatchObject({ ok: false });
+  });
   it("信頼しない投稿者の記録では進めない", () => {
     p.comments.set(1, []);
     p.addComment(1, record("doing", "pass", { branch: "issue-1-x", sha: SHA }), "attacker");
@@ -93,5 +115,19 @@ describe("監視している CI の判定", () => {
     const runs = [run("CI", "failure", "completed", "2026-01-01T00:00:00Z"), run("CI", "success", "completed", "2026-01-01T01:00:00Z")];
     expect(missingCiRuns(runs, ["CI"])).toEqual([]);
     expect(missingCiRuns([run("CI", null, "in_progress")], ["CI"])).toEqual(["CI"]);
+  });
+});
+
+describe("apply: 古い実行の結果を反映しない", () => {
+  it("列が変わった・閉じられた・blocked のときは理由を返す", () => {
+    const p = new FakePlatform();
+    p.addIssue(1, ["flow::verify"]);
+    const ctx = fakeCtx(p);
+    expect(staleReason(ctx, p.getIssue(1), "verify")).toBeNull();
+    expect(staleReason(ctx, p.getIssue(1), "doing")).toMatch(/列が verify/);
+    p.addLabels(1, [ctx.flow.blocked_label]);
+    expect(staleReason(ctx, p.getIssue(1), "verify")).toMatch(/blocked/);
+    p.addIssue(2, ["flow::verify"]);
+    expect(staleReason(ctx, { ...p.getIssue(2), state: "closed" }, "verify")).toMatch(/閉じられ/);
   });
 });

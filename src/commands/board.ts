@@ -108,13 +108,18 @@ export function checksPassed(
   if (checks !== "success") return { ok: false, why: `${impl.branch} の検査が${checks === "pending" ? "完了していません" : "失敗しています"}` };
   const missing = missingCiRuns(ctx.platform.ciRuns(impl.sha), expectedCi);
   if (missing.length) return { ok: false, why: `${impl.branch} で次の CI が成功していません: ${missing.join(", ")}` };
+  // 検査を問い合わせている間に push されていたら、新しいコミットは未検査なので進めない。
+  if (ctx.platform.branchHead(impl.branch) !== impl.sha) return { ok: false, why: `${impl.branch} に検査中の push がありました` };
   return { ok: true, branch: impl.branch };
 }
 
-/** 期待する CI のうち、最新の実行が成功していないもの(未実行を含む)。 */
+/**
+ * 期待する CI のうち、最新の実行が成功していないもの(未実行を含む)。
+ * PR で動いた実行(pull_request)だけを見る。同じワークフローが push でも動く場合、そちらの成功で PR 側の失敗を隠さない。
+ */
 export function missingCiRuns(runs: CiRun[], expected: string[]): string[] {
   return expected.filter((name) => {
-    const latest = runs.filter((r) => r.name === name).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const latest = runs.filter((r) => r.name === name && r.event === "pull_request").sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
     return !latest || latest.status !== "completed" || latest.conclusion !== "success";
   });
 }
