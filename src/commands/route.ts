@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { canTransition, flowLabel, stageFromLabel } from "../core/flow.js";
 import { excludeRunDir, git, resolveBranch, tryGit } from "../core/git.js";
-import { buildPrompt } from "../core/prompt.js";
+import { buildPrompt, repoRules } from "../core/prompt.js";
 import { latestArtifact, latestFailureFeedback, parseRuns } from "../core/record.js";
 
 export const RUN_DIR = ".taskrail/run";
@@ -69,6 +69,8 @@ export function route(opts: RouteOptions): void {
     }
   }
 
+  // ルール文書の有無は、作業ブランチに切り替える前(既定ブランチの状態)で判定する。
+  const rules = repoRules(process.cwd(), ctx.project);
   const comments = ctx.platform.listComments(issue.number);
   const trusted = trustedAuthors(ctx.project);
   const needsBranch = stage.mode === "write" || stage.agents.some((a) => DIFF_AGENTS.has(a));
@@ -121,6 +123,7 @@ export function route(opts: RouteOptions): void {
         plan: latestArtifact(comments, "plan", trusted),
         feedback,
         baseBranch: base,
+        rules,
       }),
     );
     outputs[`agent_${i + 1}`] = agent;

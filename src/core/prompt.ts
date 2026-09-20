@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Comment, Issue } from "../adapters/types.js";
 import { packageRoot } from "./config.js";
@@ -14,6 +14,60 @@ export interface PromptContext {
   plan: string | null;
   feedback: string[];
   baseBranch: string | null;
+  rules: RepoRules;
+}
+
+/** 導入先リポジトリのルール。導入先にファイルがなくても、エージェントが判断できるだけの情報を渡す。 */
+export interface RepoRules {
+  /** 導入先にあるルール文書(リポジトリのルートからの相対パス)。 */
+  docs: string[];
+  /** 導入先に docs/constitution.md がないときに埋め込む既定の原則。あるときは null。 */
+  defaultConstitution: string | null;
+  checkCommands: string[];
+  protectedPaths: string[];
+}
+
+const RULE_DOCS = ["CLAUDE.md", "AGENTS.md", "docs/constitution.md"];
+
+export function repoRules(cwd: string, project: { check_commands: string[]; protected_paths: string[] }): RepoRules {
+  const docs = RULE_DOCS.filter((f) => existsSync(join(cwd, f)));
+  return {
+    docs,
+    defaultConstitution: docs.includes("docs/constitution.md") ? null : readFileSync(join(packageRoot(), "flow", "constitution.md"), "utf8"),
+    checkCommands: project.check_commands,
+    protectedPaths: project.protected_paths,
+  };
+}
+
+/** 既定の原則を「## 原則(既定)」の下に収める。表題と人間向けの注記(引用)を除き、見出しを1段下げる。 */
+function embedConstitution(text: string): string {
+  return text
+    .split("\n")
+    .filter((l, i) => !(i === 0 && l.startsWith("# ")) && !l.startsWith(">"))
+    .map((l) => (l.startsWith("#") ? `#${l}` : l))
+    .join("\n")
+    .trim();
+}
+
+/** プロンプトの一部として渡す(タグで囲む入力とは違い、taskrail が決めた信頼できる内容)。 */
+function renderRules(r: RepoRules): string {
+  const list = (xs: string[]) => xs.map((x) => `- \`${x}\``).join("\n");
+  const parts = ["# このリポジトリのルール"];
+  parts.push(
+    r.docs.length
+      ? `次のルール文書を読み、従ってください。\n\n${list(r.docs)}`
+      : "このリポジトリにはルール文書(`CLAUDE.md`、`AGENTS.md`、`docs/constitution.md`)がありません。README と既存のコードから慣習を読み取ってください。",
+  );
+  parts.push(
+    r.checkCommands.length
+      ? `## 完了前に通すコマンド\n\n\`\`\`sh\n${r.checkCommands.join("\n")}\n\`\`\``
+      : "## 完了前に通すコマンド\n\n指定はありません。ルール文書、README、`package.json` などのビルド定義、CI の定義から、lint・型チェック・テストのコマンドを判断してください。実行したコマンドは `summary` に書きます。",
+  );
+  parts.push(`## 変更してはいけないパス(protected_paths)\n\n${list(r.protectedPaths)}`);
+  if (r.defaultConstitution) {
+    parts.push(`## 原則(既定)\n\n\`docs/constitution.md\` がないため、次の既定の原則に従います。\n\n${embedConstitution(r.defaultConstitution)}`);
+  }
+  return parts.join("\n\n");
 }
 
 /** その工程に必要な文脈だけを渡す。前工程の会話や、関係のない成果物は含めない。 */
@@ -35,7 +89,7 @@ export function buildPrompt(ctx: PromptContext): string {
   const stage = fill(readFileSync(join(dir, `${ctx.agent}.md`), "utf8"));
   const needs = NEEDS[ctx.agent] ?? { comments: true, spec: true, plan: true, feedback: true, diff: true };
 
-  const parts: string[] = [common, stage, "# 入力"];
+  const parts: string[] = [common, stage, renderRules(ctx.rules), "# 入力"];
   parts.push(
     tag("issue", `#${ctx.issue.number} ${ctx.issue.title}\nラベル: ${ctx.issue.labels.join(", ")}\n\n${ctx.issue.body}`),
   );
