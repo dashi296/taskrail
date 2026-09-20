@@ -34,10 +34,11 @@
   "artifact": "次工程へ引き継ぐMarkdown(仕様・計画の工程のみ)",
   "questions": ["blocked のときの質問"],
   "labels": { "size": "s | m | l", "ai": "ok | no" },
-  "criteria": [{ "text": "受け入れ条件", "met": true, "evidence": "根拠" }],
-  "findings": [{ "severity": "blocker | major | minor", "file": "path", "line": 1, "message": "指摘" }],
+  "criteria": [{ "text": "受け入れ条件(実装・仕様収束チェックの工程のみ)", "met": true, "evidence": "根拠" }],
+  "findings": [{ "severity": "blocker | major | minor", "file": "path", "line": 1, "message": "指摘(検証の工程のみ)" }],
   "pr_title": "PR/MRのタイトル(実装工程のみ)"
 }
 ```
 
-使わない項目は省略します。JSONとして不正なファイル、またはファイルがない場合、この工程は失敗として扱われます。
+使わない項目は省略します。工程が限定されている項目は、ほかの工程では書きません
+(たとえば計画の工程では、受け入れ条件との対応は `criteria` ではなく `artifact` に書きます)。JSONとして不正なファイル、またはファイルがない場合、この工程は失敗として扱われます。
