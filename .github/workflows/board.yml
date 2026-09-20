@@ -81,6 +81,8 @@ jobs:
           TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
         run: |
           ev="$GITHUB_EVENT_PATH"
+          # fork のブランチは、名前が作業ブランチと同じでも対象にしない
+          same_repo() { [ "$(jq -r "$1" "$ev")" = "$GITHUB_REPOSITORY" ] || { echo "fork のブランチのため対象外"; exit 0; }; }
           case "$GITHUB_EVENT_NAME" in
             schedule|workflow_dispatch)
               $TASKRAIL dispatch ;;
@@ -88,13 +90,16 @@ jobs:
               $TASKRAIL resume --event "$ev" ;;
             workflow_run)
               [ "$(jq -r .workflow_run.conclusion "$ev")" = success ] || exit 0
+              same_repo .workflow_run.head_repository.full_name
               # CI が複数あっても、すべての検査が成功してから進める
               $TASKRAIL advance --branch "$(jq -r .workflow_run.head_branch "$ev")" --from doing --to verify --require-checks ;;
             pull_request_review)
               [ "$(jq -r .review.state "$ev")" = changes_requested ] || exit 0
+              same_repo .pull_request.head.repo.full_name
               $TASKRAIL advance --branch "$(jq -r .pull_request.head.ref "$ev")" --from review --to doing ;;
             pull_request)
               [ "$(jq -r .pull_request.merged "$ev")" = true ] || exit 0
+              same_repo .pull_request.head.repo.full_name
               $TASKRAIL advance --branch "$(jq -r .pull_request.head.ref "$ev")" --from review --to done ;;
             *)
               echo "対象外のイベント: $GITHUB_EVENT_NAME" ;;
