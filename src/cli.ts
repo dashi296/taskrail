@@ -51,7 +51,12 @@ program
   .option("--agent <name>", "期待するエージェント名")
   .action(validate);
 
-common(program.command("metrics").description("完了した Issue から運用指標を集計する").option("--days <n>", "対象期間(日)", "30").option("--json")).action(metrics);
+common(program
+  .command("metrics")
+  .description("完了した Issue から運用指標を集計する")
+  .option("--days <n>", "対象期間(日)", "30")
+  .option("--bot-login <login>", "記録を書いた taskrail の App のログイン名(例: my-taskrail[bot])。設定になければ必須")
+  .option("--json")).action(metrics);
 
 // --- 実行(CI から呼ばれる) ---
 common(program
@@ -78,6 +83,7 @@ common(program
   .requiredOption("--to <stage>")
   .option("--from <stage>", "現在この stage のときだけ動かす")
   .option("--require-checks", "ブランチの先頭コミットの検査(CI)がすべて成功しているときだけ動かす")
+  .option("--actor <login>", "きっかけになった人。write 以上の権限がなければ動かさない")
   .option("--dry-run")).action(advance);
 
 common(program.command("resume").description("blocked の Issue を、回答コメントをきっかけに再開する").requiredOption("--event <path>").option("--dry-run")).action(resume);

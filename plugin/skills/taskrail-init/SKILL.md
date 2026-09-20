@@ -43,7 +43,8 @@ description: リポジトリに taskrail(Issueボード駆動のAI開発フロ�
 
 ## 利用者に必ず伝えること
 
-- `bot_logins` は Actions では GitHub App から自動で決まる。ローカル実行では投稿者で絞り込まないので、外部の人が書き込める Issue で使わない。
+- Issue 上の記録を信頼する投稿者は、Actions では GitHub App(自動で決まる)、ローカル実行では gh のログインユーザー。
+- ローカル実行では、エージェントが手元の端末で動く。外部の人が書き込める Issue は、Actions で扱う。
 - 設定を `TASKRAIL_CONFIG` に置くと、変更が PR レビューを通らない。
 - 既定ブランチの保護を有効にするまで、AI のトークンで直接 push できてしまう。
 - 最初は 1 リポジトリ、`size::s` の Issue から始める。

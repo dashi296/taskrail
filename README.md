@@ -51,8 +51,8 @@ docs/                 設計・安全性・GitLab 対応の文書、利用者向
 
 1. このリポジトリを `<your-org>/taskrail` として作成し、`v0` タグを打つ。
 2. GitHub App を作成する。
-   - 権限: Contents (Read & write)、Issues (Read & write)、Pull requests (Read & write)、Checks (Read)、Commit statuses (Read)、Metadata (Read)
-   - Checks と Commit statuses は、作業ブランチの CI がすべて成功したかを確認するために使います。
+   - 権限: Contents (Read & write)、Issues (Read & write)、Pull requests (Read & write)、Checks (Read)、Commit statuses (Read)、Actions (Read)、Metadata (Read)
+   - Checks、Commit statuses、Actions は、作業ブランチの CI がすべて成功したかを確認するために使います。
    - 導入先のリポジトリと、`taskrail` リポジトリにインストールする。
    - `GITHUB_TOKEN` で付けたラベルは次のワークフローを起動しないため、App が必須です。
 3. `taskrail` リポジトリが private の場合、Settings → Actions → General → Access で、
@@ -139,14 +139,14 @@ Claude Code を使っているなら、プラグインの `taskrail-init` skill 
 | `doctor` | 導入状態を診断する | 人間 |
 | `labels sync` | ラベルを作成・更新する | 人間 |
 | `validate --flow` / `--result <file>` | フロー定義、結果ファイルを検証する | 人間・CI |
-| `metrics --days 30` | 滞留時間、差し戻し率、blocked 率を集計する | 人間 |
+| `metrics --days 30 --bot-login <App>[bot]` | 滞留時間、差し戻し率、blocked 率を集計する(記録を書いた App を指定する) | 人間 |
 | `route` | イベントから、実行するエージェント・プロンプト・権限を決める | CI |
 | `apply` | 結果を検証し、コメント・PR作成・列の移動を行う | CI |
 | `dispatch` | Ready → In Progress(WIP上限と依存関係を確認) | CI(定期) |
 | `advance` | CI成功・修正依頼・マージを列の移動に反映する | CI |
 | `resume` | blocked の Issue を回答コメントで再開する | CI |
 
-`route` と `apply` は手元でも試せます。
+`route` と `apply` は手元でも試せます。Issue 上の記録は、信頼する投稿者(`bot_logins`、または環境変数 `TASKRAIL_BOT_LOGIN` / `TASKRAIL_RECORD_AUTHOR`)のものだけを読みます。
 
 ```sh
 taskrail route --issue 12 --stage spec --no-checkout   # .taskrail/run/ にプロンプトが出る
@@ -168,6 +168,12 @@ DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まず
 - 列を動かしても次の工程は自動では起動しません。工程ごとに実行し直します。
 - 人間の操作(仕様・計画の承認)はラベルを手で付け替えます。
 - AIを使わない遷移はコマンドで行います。ready → doing は `taskrail dispatch`、CI 成功後の doing → verify は `taskrail advance --branch <作業ブランチ> --from doing --to verify --require-checks` です(`--require-checks` は、ブランチの検査がすべて成功していなければ進めません)。
+  `local-run.sh` で書いた記録は `gh` のログインユーザー名義なので、これらのコマンドには `TASKRAIL_RECORD_AUTHOR` を与えます(与えないと記録を読まず、doing → verify に進みません)。
+
+  ```sh
+  export TASKRAIL_RECORD_AUTHOR=$(gh api user --jq .login)
+  taskrail dispatch
+  ```
 - `--ci` でワークフローを置いている場合は、Actions が同時に動かないよう、リポジトリ変数 `TASKRAIL_ENABLED` を `false` にしておきます。
 
 ## 改善の回し方

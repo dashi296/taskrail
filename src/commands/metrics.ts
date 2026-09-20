@@ -32,7 +32,9 @@ export function dwellFromEvents(events: LabelEvent[], prefix: string, endIso: st
   return dwell;
 }
 
-export function metrics(opts: { days: string; flow?: string; repo?: string; json?: boolean }): void {
+export function metrics(opts: { days: string; flow?: string; repo?: string; json?: boolean; botLogin?: string }): void {
+  // 手元で実行すると App のログイン名が分からないため、記録を書いた bot を指定できるようにする。
+  if (opts.botLogin) process.env.TASKRAIL_BOT_LOGIN = opts.botLogin;
   const ctx = loadCtx(opts);
   const since = new Date(Date.now() - Number(opts.days) * 86_400_000).toISOString();
   const issues = ctx.platform

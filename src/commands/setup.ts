@@ -86,8 +86,10 @@ export function init(opts: InitOptions): void {
   if (!files.length && !otherEntries.length) console.log("  リポジトリに置くファイルはありません(ローカル実行専用)");
   if (excludeTaskrailDir()) console.log("  除外  .taskrail/(.git/info/exclude に追記。.gitignore は変更しません)");
   if (opts.ci && opts.platform === "github" && !otherEntries.length) {
-    const filtered = analyzeCiWorkflows(cwd, localDefaultBranch()).filter((w) => w.runsOnPr && w.pathFiltered);
-    for (const w of filtered) console.log(`  ! ${w.name} は paths で絞り込まれています。変更したファイルによっては起動せず、Verify に進みません`);
+    for (const w of analyzeCiWorkflows(cwd, localDefaultBranch()).filter((x) => !x.runsOnPr || x.pathFiltered)) {
+      const why = w.runsOnPr ? "paths で絞り込まれていて、変更したファイルによっては起動しないため" : w.reason;
+      console.log(`  - ${w.name} は対象にしません(${why})`);
+    }
     console.log(
       ci.length
         ? `\n  CI ワークフロー: ${ci.join(", ")}(成功したら In Progress → Verify に進めます)`
@@ -160,7 +162,8 @@ export function analyzeCiWorkflows(cwd: string, base: string): CiWorkflow[] {
  */
 export function detectCiWorkflows(cwd: string, base = localDefaultBranch()): string[] {
   return analyzeCiWorkflows(cwd, base)
-    .filter((w) => w.runsOnPr)
+    // paths で絞り込まれた CI は、変更したファイルによっては起動せず、すべての CI の成功を待つゲートが進まなくなる
+    .filter((w) => w.runsOnPr && !w.pathFiltered)
     .map((w) => w.name);
 }
 
@@ -177,6 +180,11 @@ function pullRequestTrigger(on: unknown, base: string): Omit<CiWorkflow, "name">
     return { runsOnPr: false, pathFiltered, reason: `types(${types.join(", ")})に opened と synchronize の両方が含まれていません` };
   }
   const matches = (globs: string[]) => globs.some((g) => globToRegExp(g).test(base));
+  const negated = [...(list(c.branches) ?? []), ...(list(c["branches-ignore"]) ?? [])].filter((g) => g.startsWith("!"));
+  if (negated.length) {
+    // GitHub の否定パターンは順序に依存する。正しく解釈できないものは自動では選ばない。
+    return { runsOnPr: false, pathFiltered, reason: `否定パターン(${negated.join(", ")})を含むため、起動するかを判定できません` };
+  }
   const branches = list(c.branches);
   if (branches && !matches(branches)) return { runsOnPr: false, pathFiltered, reason: `branches(${branches.join(", ")})が ${base} を含みません` };
   const ignored = list(c["branches-ignore"]);
@@ -190,7 +198,7 @@ function localDefaultBranch(): string {
 }
 
 /** 呼び出し側ワークフローの workflow_run.workflows。 */
-function listedCiWorkflows(callerYaml: string): string[] {
+export function listedCiWorkflows(callerYaml: string): string[] {
   const wf = parse(callerYaml) as { on?: { workflow_run?: { workflows?: unknown } } } | null;
   const listed = wf?.on?.workflow_run?.workflows;
   return Array.isArray(listed) ? listed.map(String) : [];
