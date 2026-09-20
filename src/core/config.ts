@@ -64,7 +64,7 @@ export const ProjectSchema = z
     /** AIの変更を禁止するパス(glob)。変更が含まれていたら blocked にする。 */
     protected_paths: z
       .array(z.string())
-      .default([".github/**", ".gitlab-ci.yml", "taskrail.yml", "**/migrations/**", "**/.env*"]),
+      .default([".github/**", ".gitlab-ci.yml", "taskrail.yml", "CODEOWNERS", "**/migrations/**", "**/.env*"]),
     /** 作業ブランチの接頭辞。ブランチ名は `<prefix><issue番号>-<slug>`。 */
     branch_prefix: z.string().default("issue-"),
     /** エージェントが完了前に通すコマンド(lint・型チェック・テスト)。空ならリポジトリの文書から判断させる。 */
@@ -95,7 +95,13 @@ export function loadProject(cwd = process.cwd(), env: NodeJS.ProcessEnv = proces
   const fromEnv = env.TASKRAIL_CONFIG?.trim() ? asObject(parse(env.TASKRAIL_CONFIG), "TASKRAIL_CONFIG") : {};
   const file = join(cwd, "taskrail.yml");
   const fromFile = existsSync(file) ? asObject(readYaml(file), "taskrail.yml") : {};
-  const project = ProjectSchema.parse({ ...fromEnv, ...fromFile });
+  const parsed = ProjectSchema.safeParse({ ...fromEnv, ...fromFile });
+  if (!parsed.success) {
+    const where = projectSource(cwd, env).join(" / ") || "設定";
+    const issues = parsed.error.issues.map((i) => `- ${i.path.join(".") || "(ルート)"}: ${i.message}`);
+    throw new Error(`${where} が不正です:\n${issues.join("\n")}`);
+  }
+  const project = parsed.data;
   const bot = env.TASKRAIL_BOT_LOGIN?.trim();
   if (!project.bot_logins.length && bot) {
     if (!BOT_LOGIN.test(bot)) throw new Error(`TASKRAIL_BOT_LOGIN が GitHub のログイン名として不正です: ${bot}`);

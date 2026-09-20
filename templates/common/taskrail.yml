@@ -1,4 +1,6 @@
-# taskrail のプロジェクト設定。フロー自体の定義は taskrail 本体(flow/flow.yml)にあります。
+# taskrail のプロジェクト設定(任意)。フロー自体の定義は taskrail 本体(flow/flow.yml)にあります。
+# このファイルがなくても、既定値とリポジトリ変数 TASKRAIL_CONFIG(同じ形式の YAML)で動きます。
+# ファイルを置くと、設定の変更を PR レビューで管理できます。ファイルの値が TASKRAIL_CONFIG より優先されます。
 
 # 参照している taskrail のタグ。`taskrail update --ref <tag>` が書き換えます。
 taskrail_ref: "{{TASKRAIL_REF}}"
@@ -12,8 +14,12 @@ wip_limit: 2
 max_rework: 3
 
 # taskrail が使う GitHub App のログイン名(例: "my-taskrail[bot]")。
-# 必ず設定してください。未設定だと、Issueコメント内の記録を誰でも偽装できます。
+# 空なら、Actions では App から自動で決まります。Issue コメント内の記録は、このログイン名のものだけを信頼します。
 bot_logins: []
+
+# エージェントが完了前に通すコマンド(lint・型チェック・テスト)。
+# 空なら、エージェントがルール文書・README・ビルド定義・CI の定義から判断します。
+check_commands: []
 
 # AIによる変更を禁止するパス。変更が含まれていたら、PRを作らずに blocked にします。
 protected_paths:

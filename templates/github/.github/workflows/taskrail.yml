@@ -1,5 +1,6 @@
-# taskrail の薄い入口。ロジックは {{TASKRAIL_OWNER}}/taskrail 側にあり、ここはイベントを渡すだけです。
-# バージョンの更新は `taskrail update --ref <tag>` で行います(@ 以降と taskrail_ref が書き換わります)。
+# taskrail の入口。ロジックと設定は {{TASKRAIL_OWNER}}/taskrail 側と、リポジトリ変数にあります。
+# 更新は `taskrail update --ref <tag>` で行います(@ 以降と taskrail_ref が書き換わります)。
+# 設定: リポジトリ変数 TASKRAIL_ENABLED(キルスイッチ)、TASKRAIL_CONFIG(任意。YAML)
 name: taskrail
 
 on:
@@ -12,10 +13,10 @@ on:
   pull_request_review:
     types: [submitted]
   workflow_run:
-    workflows: ["CI"] # ← このリポジトリのCIワークフローの name に合わせてください
+    workflows: {{CI_WORKFLOWS}} # CI が成功したら In Progress → Verify
     types: [completed]
   schedule:
-    - cron: "*/10 * * * *" # Ready の Issue への着手判断
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -30,77 +31,25 @@ jobs:
       taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
       taskrail_ref: "{{TASKRAIL_REF}}"
       enabled: ${{ vars.TASKRAIL_ENABLED }}
+      config: ${{ vars.TASKRAIL_CONFIG }}
     secrets: inherit
 
-  # blocked の Issue に回答コメントが付いたら再開
-  resume:
-    if: github.event_name == 'issue_comment' && !github.event.issue.pull_request
-    uses: {{TASKRAIL_OWNER}}/taskrail/.github/workflows/board.yml@{{TASKRAIL_REF}}
-    with:
-      command: resume
-      taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
-      taskrail_ref: "{{TASKRAIL_REF}}"
-      enabled: ${{ vars.TASKRAIL_ENABLED }}
-    secrets: inherit
-
-  # Ready → In Progress(WIP上限と依存関係を確認)
-  dispatch:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    uses: {{TASKRAIL_OWNER}}/taskrail/.github/workflows/board.yml@{{TASKRAIL_REF}}
-    with:
-      command: dispatch
-      taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
-      taskrail_ref: "{{TASKRAIL_REF}}"
-      enabled: ${{ vars.TASKRAIL_ENABLED }}
-    secrets: inherit
-
-  # CI が緑になったら In Progress → Verify
-  ci-passed:
+  # AIを使わないボード操作(着手、CI成功・修正依頼・マージの反映、回答での再開)。振り分けは board.yml が行う。
+  # 無関係な CI や PR でジョブを起動しないよう、作業ブランチ(接頭辞 {{BRANCH_PREFIX}})だけを対象にする。
+  board:
     if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'issue-')
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+        startsWith(github.event.workflow_run.head_branch, '{{BRANCH_PREFIX}}')) ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' &&
+        startsWith(github.event.pull_request.head.ref, '{{BRANCH_PREFIX}}')) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged &&
+        startsWith(github.event.pull_request.head.ref, '{{BRANCH_PREFIX}}'))
     uses: {{TASKRAIL_OWNER}}/taskrail/.github/workflows/board.yml@{{TASKRAIL_REF}}
     with:
-      command: advance
-      branch: ${{ github.event.workflow_run.head_branch }}
-      from: doing
-      to: verify
       taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
       taskrail_ref: "{{TASKRAIL_REF}}"
       enabled: ${{ vars.TASKRAIL_ENABLED }}
-    secrets: inherit
-
-  # 人間のレビューで修正依頼 → Human Review → In Progress
-  changes-requested:
-    if: >-
-      github.event_name == 'pull_request_review' &&
-      github.event.review.state == 'changes_requested' &&
-      startsWith(github.event.pull_request.head.ref, 'issue-')
-    uses: {{TASKRAIL_OWNER}}/taskrail/.github/workflows/board.yml@{{TASKRAIL_REF}}
-    with:
-      command: advance
-      branch: ${{ github.event.pull_request.head.ref }}
-      from: review
-      to: doing
-      taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
-      taskrail_ref: "{{TASKRAIL_REF}}"
-      enabled: ${{ vars.TASKRAIL_ENABLED }}
-    secrets: inherit
-
-  # マージ → Done
-  merged:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'issue-')
-    uses: {{TASKRAIL_OWNER}}/taskrail/.github/workflows/board.yml@{{TASKRAIL_REF}}
-    with:
-      command: advance
-      branch: ${{ github.event.pull_request.head.ref }}
-      from: review
-      to: done
-      taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
-      taskrail_ref: "{{TASKRAIL_REF}}"
-      enabled: ${{ vars.TASKRAIL_ENABLED }}
+      config: ${{ vars.TASKRAIL_CONFIG }}
     secrets: inherit
