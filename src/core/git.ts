@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 export function git(args: string[], cwd = process.cwd()): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -44,13 +44,21 @@ export function issueFromBranch(prefix: string, branch: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-/** 実行用ディレクトリをコミット対象から外す(.gitignore は変更しない)。 */
-export function excludeRunDir(cwd = process.cwd()): void {
-  const file = join(cwd, ".git", "info", "exclude");
-  if (!existsSync(join(cwd, ".git", "info"))) return;
-  const line = ".taskrail/run/";
+/**
+ * taskrail のローカル用ディレクトリ(.taskrail/)をコミット対象から外す。
+ * 導入先のファイルを増やさないよう .gitignore は変更せず、コミットされない .git/info/exclude に書く。
+ * git worktree でも正しい場所に書けるよう、パスは git に尋ねる。
+ */
+export function excludeTaskrailDir(): boolean {
+  const rel = tryGit(["rev-parse", "--git-path", "info/exclude"]);
+  if (!rel) return false;
+  const file = resolve(rel);
+  const line = ".taskrail/";
   const current = existsSync(file) ? readFileSync(file, "utf8") : "";
-  if (!current.split("\n").includes(line)) appendFileSync(file, `${current.endsWith("\n") || !current ? "" : "\n"}${line}\n`);
+  if (current.split("\n").includes(line)) return true;
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, `${current.endsWith("\n") || !current ? "" : "\n"}${line}\n`);
+  return true;
 }
 
 /** 未コミットの変更(追跡外ファイルを含む)。 */

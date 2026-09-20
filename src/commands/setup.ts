@@ -5,7 +5,7 @@ import { parse } from "yaml";
 import { createPlatform } from "../adapters/index.js";
 import { checkFlow, loadFlow, loadProject, packageRoot, packageVersion, projectSource, ProjectSchema } from "../core/config.js";
 import { flowLabel } from "../core/flow.js";
-import { tryGit } from "../core/git.js";
+import { excludeTaskrailDir, tryGit } from "../core/git.js";
 import { readResult } from "../core/result.js";
 
 const REF_PATTERN = /(\/taskrail\/\.github\/workflows\/[a-z-]+\.yml@)([\w.-]+)/g;
@@ -29,6 +29,8 @@ export interface InitOptions {
   ref: string;
   force?: boolean;
   labels?: boolean;
+  /** CI(GitHub Actions など)で自動実行するための入口を置く。置かなければローカル実行専用。 */
+  ci?: boolean;
   /** docs/constitution.md(既定の原則 + 固有の原則を書く欄)を置く。 */
   docs?: boolean;
   issueTemplate?: boolean;
@@ -36,12 +38,15 @@ export interface InitOptions {
   config?: boolean;
 }
 
-/** 導入先のリポジトリに taskrail の入口を置く。既定ではワークフロー1つだけ。既存ファイルは上書きしない。 */
+/**
+ * 導入先のリポジトリに taskrail を導入する。既定ではリポジトリに何も置かない(ローカル実行専用)。
+ * CI で自動実行するときだけ --ci で入口のワークフローを置く。既存ファイルは上書きしない。
+ */
 export function init(opts: InitOptions): void {
   if (opts.platform !== "github" && opts.platform !== "gitlab") throw new Error("--platform は github か gitlab です");
   const cwd = process.cwd();
   const root = join(packageRoot(), "templates");
-  const ci = opts.platform === "github" ? detectCiWorkflows(cwd) : [];
+  const ci = opts.ci && opts.platform === "github" ? detectCiWorkflows(cwd) : [];
   const vars: Record<string, string> = {
     "{{TASKRAIL_OWNER}}": opts.owner,
     "{{TASKRAIL_REF}}": opts.ref,
@@ -55,7 +60,7 @@ export function init(opts: InitOptions): void {
     text: () => Object.entries(vars).reduce((t, [k, v]) => t.replaceAll(k, v), readFileSync(join(root, rel), "utf8")),
   });
   const set = TEMPLATES[opts.platform];
-  files.push(...set.core.map(fromTemplate));
+  if (opts.ci) files.push(...set.core.map(fromTemplate));
   if (opts.issueTemplate) files.push(...set.issueTemplate.map(fromTemplate));
   if (opts.config) files.push(fromTemplate("common/taskrail.yml"));
   if (opts.docs) files.push({ dest: "docs/constitution.md", text: constitutionForProject });
@@ -74,7 +79,9 @@ export function init(opts: InitOptions): void {
   }
   for (const f of written) console.log(`  作成  ${f}`);
   for (const f of skipped) console.log(`  既存  ${f}(上書きしません。--force で上書き)`);
-  if (opts.platform === "github") {
+  if (!files.length) console.log("  リポジトリに置くファイルはありません(ローカル実行専用)");
+  if (excludeTaskrailDir()) console.log("  除外  .taskrail/(.git/info/exclude に追記。.gitignore は変更しません)");
+  if (opts.ci && opts.platform === "github") {
     console.log(
       ci.length
         ? `\n  CI ワークフロー: ${ci.join(", ")}(成功したら In Progress → Verify に進めます)`
@@ -82,11 +89,18 @@ export function init(opts: InitOptions): void {
     );
   }
   if (opts.labels) labelsSync({});
-  console.log(`\n次の手順(README の「導入」を参照):
+  console.log(
+    opts.ci
+      ? `\n次の手順(README の「導入」を参照):
   1. Secrets(ANTHROPIC_API_KEY、TASKRAIL_APP_ID、TASKRAIL_APP_PRIVATE_KEY)を設定する
   2. 必要なら、リポジトリ変数 TASKRAIL_CONFIG に設定を書く(check_commands、protected_paths など)
   3. taskrail labels sync を実行する
-  4. taskrail doctor で確認する`);
+  4. taskrail doctor で確認する`
+      : `\n次の手順(README の「ローカルで1工程ずつ回す」を参照):
+  1. taskrail labels sync を実行する
+  2. Issue に flow::inbox を付け、scripts/local-run.sh <issue番号> で1工程ずつ実行する
+  CI で自動実行するときは、taskrail init --ci でワークフローを追加します。`,
+  );
 }
 
 /**
@@ -220,12 +234,14 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
     true,
   );
 
-  const wf = project.platform === "github" ? ".github/workflows/taskrail.yml" : ".gitlab-ci.yml";
-  add(`ワークフロー(${wf})`, existsSync(join(cwd, wf)), "taskrail init を実行してください");
+  const wf = project.platform === "github" ? ".github/workflows/taskrail.yml" : ".gitlab/ci/taskrail.gitlab-ci.yml";
+  // ワークフローがなければローカル実行専用。CI 用の検査(Secrets、キルスイッチ、参照バージョン、CI 名)は行わない。
+  const ci = existsSync(join(cwd, wf));
+  add(ci ? `CI での自動実行(${wf})` : "CI での自動実行: なし(ローカル実行専用。使うときは taskrail init --ci)", true);
   const docs = ["CLAUDE.md", "AGENTS.md", "docs/constitution.md"].filter((f) => existsSync(join(cwd, f)));
   add(`ルール文書(${docs.length ? docs.join(", ") : "なし"})`, true);
   if (!docs.includes("docs/constitution.md")) add("原則(docs/constitution.md がないため、taskrail 同梱の既定を使います)", true);
-  if (existsSync(join(cwd, wf)) && project.platform === "github") {
+  if (ci && project.platform === "github") {
     const text = readFileSync(join(cwd, wf), "utf8");
     const refs = [...text.matchAll(REF_PATTERN)].map((m) => m[2]);
     add(`参照バージョンの固定(${refs[0] ?? "?"})`, refs.length > 0 && !refs.includes("main") ? true : "warn", "main ではなくタグ(v1 など)を参照してください");
@@ -254,14 +270,16 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
       const api = (path: string) => `repos/${opts.repo ?? "{owner}/{repo}"}/${path}`;
       const lines = (out: string | null) => (out ?? "").split("\n").filter(Boolean);
       const names = (kind: string) => new Set(lines(sh("gh", [kind, "list", ...repoArgs, "--json", "name", "--jq", ".[].name"])));
-      // Organization の Secrets のうち、このリポジトリから使えるもの。個人リポジトリでは取得できない(422)ので空とみなす。
-      const orgSecrets = lines(trySh("gh", ["api", api("actions/organization-secrets"), "--jq", ".secrets[].name"]));
-      const secrets = new Set([...names("secret"), ...orgSecrets]);
-      for (const s of ["ANTHROPIC_API_KEY", "TASKRAIL_APP_ID", "TASKRAIL_APP_PRIVATE_KEY"]) {
-        add(`Secret ${s}`, secrets.has(s), "リポジトリまたは Organization の Secrets に設定してください");
+      if (ci) {
+        // Organization の Secrets のうち、このリポジトリから使えるもの。個人リポジトリでは取得できない(422)ので空とみなす。
+        const orgSecrets = lines(trySh("gh", ["api", api("actions/organization-secrets"), "--jq", ".secrets[].name"]));
+        const secrets = new Set([...names("secret"), ...orgSecrets]);
+        for (const s of ["ANTHROPIC_API_KEY", "TASKRAIL_APP_ID", "TASKRAIL_APP_PRIVATE_KEY"]) {
+          add(`Secret ${s}`, secrets.has(s), "リポジトリまたは Organization の Secrets に設定してください");
+        }
+        const enabled = names("variable").has("TASKRAIL_ENABLED");
+        add("変数 TASKRAIL_ENABLED(キルスイッチ)", enabled ? true : "warn", '未設定は有効扱いです。止めるときは "false" を設定します');
       }
-      const enabled = names("variable").has("TASKRAIL_ENABLED");
-      add("変数 TASKRAIL_ENABLED(キルスイッチ)", enabled ? true : "warn", '未設定は有効扱いです。止めるときは "false" を設定します');
       const base = platform.defaultBranch();
       const classic = shResult("gh", ["api", api(`branches/${base}/protection`), "--jq", ".url"]);
       const rules = shResult("gh", ["api", api(`rules/branches/${base}`), "--jq", ".[].type"]);

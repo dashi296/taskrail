@@ -40,7 +40,7 @@ src/                  CLI(flow/ を読んで実行するだけの薄い実行器
   adapters/             GitHub / GitLab の差を吸収する層
   commands/             サブコマンド
 .github/workflows/    再利用ワークフロー(route.yml、board.yml)と、このリポジトリ自身の CI
-templates/            `taskrail init` が導入先に配置するファイル(既定ではワークフロー1つ)
+templates/            `taskrail init` が導入先に配置するファイル(既定では何も置かない)
 plugin/               Claude Code プラグイン(skills)
 docs/                 設計・安全性・GitLab 対応の文書、利用者向けの説明(workflow.md、runbook.md)
 ```
@@ -67,21 +67,26 @@ npm ci && npm link        # taskrail コマンドが使えるようになる
 ### 2. 導入先のリポジトリで
 
 ```sh
-taskrail init --owner <your-org> --ref v0
+taskrail init --owner <your-org> --ref v0          # ローカル実行だけで使う(リポジトリに何も置かない)
+taskrail init --owner <your-org> --ref v0 --ci     # CI(GitHub Actions)で自動実行する
 ```
 
-導入先のリポジトリに置くのは `.github/workflows/taskrail.yml` の1ファイルだけです。
+既定では、導入先のリポジトリにファイルを置きません。作業用の `.taskrail/` は、コミットされない `.git/info/exclude` で除外します(`.gitignore` は変更しません)。
+この状態では、[ローカルで1工程ずつ回す](#ローカルで1工程ずつ回す)方法で使えます。
+
+ラベルの変更で自動的にエージェントを動かすには、`--ci` で `.github/workflows/taskrail.yml` を置きます。GitHub Actions はリポジトリにコミットされたワークフローしか起動しないため、自動実行にはこの1ファイルが必要です。
 `workflow_run` が対象にする CI の名前は、既存の CI ワークフローから自動で入ります。
 
 必要なものだけ追加で置けます。
 
 | フラグ | 置くファイル | 置かない場合 |
 | --- | --- | --- |
+| `--ci` | `.github/workflows/taskrail.yml`(自動実行の入口) | ローカル実行専用 |
 | `--docs` | `docs/constitution.md`(判断の原則) | taskrail 同梱の既定の原則([flow/constitution.md](flow/constitution.md))を使う |
 | `--issue-template` | 起票フォーム | 起票の書式は自由。項目が足りなければトリアージで質問が返る |
 | `--config` | `taskrail.yml`(設定) | 既定値と、リポジトリ変数 `TASKRAIL_CONFIG` を使う |
 
-続けて、次を設定します。
+`--ci` を付けた場合は、続けて次を設定します。
 
 | 種類 | 名前 | 値 |
 | --- | --- | --- |
@@ -126,7 +131,7 @@ Claude Code を使っているなら、プラグインの `taskrail-init` skill 
 
 | コマンド | 用途 | 使う人 |
 | --- | --- | --- |
-| `init` | 入口のワークフローを配置する(`--docs` `--issue-template` `--config` で追加) | 人間 |
+| `init` | 導入する。既定ではリポジトリに何も置かない(`--ci` `--docs` `--issue-template` `--config` で追加) | 人間 |
 | `update --ref <tag>` | 参照するタグを書き換える | 人間 |
 | `doctor` | 導入状態を診断する | 人間 |
 | `labels sync` | ラベルを作成・更新する | 人間 |
@@ -160,7 +165,7 @@ DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まず
 - 列を動かしても次の工程は自動では起動しません。工程ごとに実行し直します。
 - 人間の操作(仕様・計画の承認)はラベルを手で付け替えます。
 - AIを使わない遷移はコマンドで行います。ready → doing は `taskrail dispatch`、CI 成功後の doing → verify は `taskrail advance --branch <作業ブランチ> --from doing --to verify` です。
-- 導入先の Actions が誤って動かないよう、リポジトリ変数 `TASKRAIL_ENABLED` を `false` にしておきます。
+- `--ci` でワークフローを置いている場合は、Actions が同時に動かないよう、リポジトリ変数 `TASKRAIL_ENABLED` を `false` にしておきます。
 
 ## 改善の回し方
 

@@ -13,13 +13,14 @@ description: リポジトリに taskrail(Issueボード駆動のAI開発フロ�
 1. **前提を確認する。** `taskrail --version` と `gh auth status` を実行する。
    どちらかが失敗したら、導入方法を案内して止まる。推測で先へ進まない。
 
-2. **利用者に確認する。** 次の2点は決めつけずに聞く。
+2. **利用者に確認する。** 次の3点は決めつけずに聞く。
+   - CI(GitHub Actions)で自動実行するか、ローカル実行だけで使うか(`--ci`)
    - taskrail リポジトリを置いている Organization 名(`--owner`)
    - 参照するタグ(`--ref`。分からなければ taskrail リポジトリの最新タグを提案する)
 
-3. **入口を配置する。** `taskrail init --owner <org> --ref <tag>` を実行する。
-   置かれるのは `.github/workflows/taskrail.yml` だけです。導入先を汚さないことが既定の方針なので、
-   ほかのファイルは利用者が望んだときだけ置く(`--docs`、`--issue-template`、`--config`)。
+3. **導入する。** `taskrail init --owner <org> --ref <tag>`(自動実行するなら `--ci` を付ける)を実行する。
+   既定ではリポジトリに何も置きません。`--ci` のときだけ `.github/workflows/taskrail.yml` が置かれます。
+   導入先を汚さないことが既定の方針なので、ほかのファイルは利用者が望んだときだけ置く(`--docs`、`--issue-template`、`--config`)。
    「CI ワークフローが見つかりません」と出たら、実在する CI の `name` を利用者に確認して直す。
 
 4. **リポジトリを調べて、設定を提案する。** ここがあなたの主な仕事です。
