@@ -83,6 +83,8 @@ jobs:
         id: route
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          TASKRAIL_CONFIG: ${{ vars.TASKRAIL_CONFIG }}
+          TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
         run: $TASKRAIL route --event "$GITHUB_EVENT_PATH"
 
       - name: エージェント 1
@@ -127,4 +129,6 @@ jobs:
         if: always() && steps.route.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          TASKRAIL_CONFIG: ${{ vars.TASKRAIL_CONFIG }}
+          TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
         run: $TASKRAIL apply --issue "${{ steps.route.outputs.issue }}" --stage "${{ steps.route.outputs.stage }}"

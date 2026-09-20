@@ -30,6 +30,12 @@ if [ -z "$stage" ]; then
   [ -n "$stage" ] || die "#$issue に flow:: ラベルがありません。stage を指定してください"
 fi
 
+# Actions と同じ設定で動かすため、リポジトリ変数 TASKRAIL_CONFIG があれば読む(taskrail.yml があればそちらが優先)。
+if [ -z "${TASKRAIL_CONFIG:-}" ]; then
+  TASKRAIL_CONFIG="$(gh variable get TASKRAIL_CONFIG 2>/dev/null || true)"
+  export TASKRAIL_CONFIG
+fi
+
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 get() { grep "^$1=" "$out" | tail -1 | cut -d= -f2- || true; }
