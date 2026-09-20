@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
-import { detectCiWorkflows, init, missingCiWorkflows } from "../src/commands/setup.js";
+import { detectCiWorkflows, findEntryWorkflows, init, missingCiWorkflows } from "../src/commands/setup.js";
 
 const repo = (workflows: Record<string, string> = {}) => {
   const d = mkdtempSync(join(tmpdir(), "taskrail-init-"));
@@ -14,14 +14,16 @@ const repo = (workflows: Record<string, string> = {}) => {
 };
 
 describe("CI ワークフローの検出", () => {
-  it("pull_request か push で起動するワークフローの name を返す", () => {
+  it("pull_request で起動するワークフローの name を返す(push だけのもの、taskrail の入口は除く)", () => {
     const d = repo({
       "ci.yml": "name: CI\non: [push, pull_request]\njobs: {}\n",
       "lint.yml": "name: Lint\non:\n  pull_request:\n    branches: [main]\njobs: {}\n",
+      "main-only.yml": "name: Main\non:\n  push:\n    branches: [main]\njobs: {}\n",
       "release.yml": "name: Release\non:\n  release:\n    types: [published]\njobs: {}\n",
-      "taskrail.yml": "name: taskrail\non: push\njobs: {}\n",
+      "entry.yaml": `name: board\non: pull_request\njobs:\n  r:\n    uses: acme/taskrail/.github/workflows/route.yml@v0\n`,
     });
     expect(detectCiWorkflows(d)).toEqual(["CI", "Lint"]);
+    expect(findEntryWorkflows(d)).toEqual([".github/workflows/entry.yaml"]);
   });
   it("name がなければファイルのパスを名前にする(GitHub と同じ)", () => {
     expect(detectCiWorkflows(repo({ "test.yml": "on: pull_request\njobs: {}\n" }))).toEqual([".github/workflows/test.yml"]);
@@ -76,6 +78,11 @@ describe("init", () => {
     const constitution = readFileSync(join(d, "docs/constitution.md"), "utf8");
     expect(constitution).toContain("## このプロジェクト固有の原則");
     expect(constitution).not.toContain("既定の原則です。導入先に");
+  });
+  it("別名の入口(taskrail.yaml など)があれば、--force でも新しいワークフローを置かない", () => {
+    const d = repo({ "taskrail.yaml": "on: issues\njobs:\n  r:\n    uses: acme/taskrail/.github/workflows/route.yml@v0\n" });
+    run(d, { ci: true, force: true });
+    expect(existsSync(join(d, ".github/workflows/taskrail.yml"))).toBe(false);
   });
   it("CI が見つからなければ \"CI\" を入れる", () => {
     const d = repo();

@@ -60,7 +60,11 @@ export function init(opts: InitOptions): void {
     text: () => Object.entries(vars).reduce((t, [k, v]) => t.replaceAll(k, v), readFileSync(join(root, rel), "utf8")),
   });
   const set = TEMPLATES[opts.platform];
-  if (opts.ci) files.push(...set.core.map(fromTemplate));
+  // 別名の入口が既にあれば、二重に起動しないよう新しく置かない(--force でも同じ)。
+  const otherEntries = opts.platform === "github" ? findEntryWorkflows(cwd).filter((f) => !set.core.some((c) => c.endsWith(f))) : [];
+  if (opts.ci && otherEntries.length) {
+    console.log(`  既存  ${otherEntries.join(", ")}(taskrail の入口です。二重に起動しないよう新しいワークフローは置きません)`);
+  } else if (opts.ci) files.push(...set.core.map(fromTemplate));
   if (opts.issueTemplate) files.push(...set.issueTemplate.map(fromTemplate));
   if (opts.config) files.push(fromTemplate("common/taskrail.yml"));
   if (opts.docs) files.push({ dest: "docs/constitution.md", text: constitutionForProject });
@@ -79,13 +83,13 @@ export function init(opts: InitOptions): void {
   }
   for (const f of written) console.log(`  作成  ${f}`);
   for (const f of skipped) console.log(`  既存  ${f}(上書きしません。--force で上書き)`);
-  if (!files.length) console.log("  リポジトリに置くファイルはありません(ローカル実行専用)");
+  if (!files.length && !otherEntries.length) console.log("  リポジトリに置くファイルはありません(ローカル実行専用)");
   if (excludeTaskrailDir()) console.log("  除外  .taskrail/(.git/info/exclude に追記。.gitignore は変更しません)");
-  if (opts.ci && opts.platform === "github") {
+  if (opts.ci && opts.platform === "github" && !otherEntries.length) {
     console.log(
       ci.length
         ? `\n  CI ワークフロー: ${ci.join(", ")}(成功したら In Progress → Verify に進めます)`
-        : "\n  ! CI ワークフローが見つかりません。workflow_run.workflows を \"CI\" にしました。実在する CI の name に直してください",
+        : "\n  ! pull_request で起動する CI ワークフローが見つかりません。workflow_run.workflows を \"CI\" にしました。実在する CI の name に直してください",
     );
   }
   if (opts.labels) labelsSync({});
@@ -104,15 +108,31 @@ export function init(opts: InitOptions): void {
 }
 
 /**
- * 導入先の CI ワークフローの名前。workflow_run の対象になる(pull_request か push で起動するもの)。
+ * 既にある taskrail の入口ワークフロー(taskrail の再利用ワークフローを参照しているもの)。
+ * ファイル名(taskrail.yml / taskrail.yaml / 別名)に依らず、中身で判定する。
+ */
+export function findEntryWorkflows(cwd: string): string[] {
+  const dir = join(cwd, ".github", "workflows");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .sort()
+    .filter((f) => /\.ya?ml$/.test(f) && new RegExp(REF_PATTERN.source).test(readFileSync(join(dir, f), "utf8")))
+    .map((f) => `.github/workflows/${f}`);
+}
+
+/**
+ * 導入先の CI ワークフローの名前。workflow_run の対象になる。
+ * 作業ブランチの PR で確実に動くものだけを選ぶため、pull_request で起動するものに限る
+ * (push は branches で既定ブランチに絞られていることが多く、作業ブランチでは動かないことがある)。
  * workflow_run はワークフローの name で指定する。name がなければ GitHub はファイルのパスを名前にする。
  */
 export function detectCiWorkflows(cwd: string): string[] {
   const dir = join(cwd, ".github", "workflows");
   if (!existsSync(dir)) return [];
+  const entries = new Set(findEntryWorkflows(cwd));
   const names: string[] = [];
   for (const file of readdirSync(dir).sort()) {
-    if (!/\.ya?ml$/.test(file) || file === "taskrail.yml") continue;
+    if (!/\.ya?ml$/.test(file) || entries.has(`.github/workflows/${file}`)) continue;
     let wf: { name?: unknown; on?: unknown } | null;
     try {
       wf = parse(readFileSync(join(dir, file), "utf8")) as typeof wf;
@@ -121,7 +141,7 @@ export function detectCiWorkflows(cwd: string): string[] {
     }
     const on = wf?.on;
     const events = typeof on === "string" ? [on] : Array.isArray(on) ? on : on && typeof on === "object" ? Object.keys(on) : [];
-    if (!events.some((e) => e === "pull_request" || e === "push")) continue;
+    if (!events.includes("pull_request")) continue;
     names.push(typeof wf?.name === "string" ? wf.name : `.github/workflows/${file}`);
   }
   return names;
@@ -234,9 +254,11 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
     true,
   );
 
-  const wf = project.platform === "github" ? ".github/workflows/taskrail.yml" : ".gitlab/ci/taskrail.gitlab-ci.yml";
+  const entries = project.platform === "github" ? findEntryWorkflows(cwd) : [];
+  const wf = entries[0] ?? (project.platform === "github" ? ".github/workflows/taskrail.yml" : ".gitlab/ci/taskrail.gitlab-ci.yml");
   // ワークフローがなければローカル実行専用。CI 用の検査(Secrets、キルスイッチ、参照バージョン、CI 名)は行わない。
   const ci = existsSync(join(cwd, wf));
+  if (entries.length > 1) add("taskrail の入口ワークフロー", false, `複数あります(${entries.join(", ")})。二重に起動するので1つにしてください`);
   add(ci ? `CI での自動実行(${wf})` : "CI での自動実行: なし(ローカル実行専用。使うときは taskrail init --ci)", true);
   const docs = ["CLAUDE.md", "AGENTS.md", "docs/constitution.md"].filter((f) => existsSync(join(cwd, f)));
   add(`ルール文書(${docs.length ? docs.join(", ") : "なし"})`, true);
@@ -281,13 +303,12 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
         add("変数 TASKRAIL_ENABLED(キルスイッチ)", enabled ? true : "warn", '未設定は有効扱いです。止めるときは "false" を設定します');
       }
       const base = platform.defaultBranch();
-      const classic = shResult("gh", ["api", api(`branches/${base}/protection`), "--jq", ".url"]);
-      const rules = shResult("gh", ["api", api(`rules/branches/${base}`), "--jq", ".[].type"]);
-      const prot = branchProtection({
-        classic: classic.ok,
-        ruleTypes: lines(rules.out),
-        unavailable: [classic.err, rules.err].some((e) => /Upgrade to GitHub Pro|make this repository public/i.test(e)),
-      });
+      const classic = shResult("gh", ["api", api(`branches/${base}/protection`)]);
+      const rules = shResult("gh", ["api", api(`rules/branches/${base}`)]);
+      const prot = branchProtection(
+        protectionFacts(classic, rules, (id) => trySh("gh", ["api", api(`rulesets/${id}`)])),
+        project.bot_logins,
+      );
       add(`ブランチ保護(${base})`, prot.ok, prot.hint);
     } catch (e) {
       add("GitHub への接続", false, (e as Error).message);
@@ -320,21 +341,87 @@ export function validate(opts: { flow?: string | boolean; result?: string; agent
   } else console.log(`✔ フロー定義は有効です(${flow.stages.map((s) => s.id).join(" → ")})`);
 }
 
+/** ブランチ保護の設定のうち、判定に使うもの(GitHub の API 応答から取り出す)。 */
+export interface ProtectionFacts {
+  /** classic な branch protection。なければ null。 */
+  classic: { approvals: number; bypassApps: string[] } | null;
+  /** 既定ブランチに適用される ruleset のルール。 */
+  rules: { type: string; approvals: number }[];
+  /** ruleset のバイパス対象のうち、GitHub App(Integration)の ID。 */
+  rulesetBypassApps: number[];
+  /** プランの制約でブランチ保護を使えない。 */
+  unavailable: boolean;
+}
+
 /**
- * 既定ブランチが保護されているかの判定。classic な branch protection か、PR を必須にする ruleset のどちらかがあれば保護あり。
- * プランの制約で使えない場合も、保護がないことに変わりはないので不合格のまま、ヒントだけ変える。
+ * 既定ブランチが「レビュー必須・直接 push 禁止」で保護されているかの判定(docs/security.md)。
+ * PR を必須にし、承認が1件以上必要なことを求める。App がバイパスできる設定は、taskrail の App かどうかを
+ * 判別できないため注意として示す(taskrail の App が入っていれば、AI のトークンでレビューを迂回できる)。
  */
-export function branchProtection(p: { classic: boolean; ruleTypes: string[]; unavailable: boolean }): { ok: boolean; hint: string } {
-  if (p.classic || p.ruleTypes.includes("pull_request")) return { ok: true, hint: "" };
-  if (p.unavailable) {
+export function branchProtection(p: ProtectionFacts, botLogins: string[] = []): { ok: boolean | "warn"; hint: string } {
+  const reviewed = (p.classic !== null && p.classic.approvals >= 1) || p.rules.some((r) => r.type === "pull_request" && r.approvals >= 1);
+  if (!reviewed) {
+    if (p.unavailable) {
+      return { ok: false, hint: "このリポジトリのプランではブランチ保護を使えません。public にするか、GitHub Pro / Team 以上が必要です" };
+    }
+    const partial = p.classic !== null || p.rules.some((r) => r.type === "pull_request");
     return {
       ok: false,
-      hint: "このリポジトリのプランではブランチ保護を使えません。public にするか、GitHub Pro / Team 以上が必要です",
+      hint: partial
+        ? "保護はありますが、PR のレビュー(承認1件以上)が必須になっていません。レビューを必須にしてください"
+        : "AIのトークンで直接 push・マージできないよう、PR とレビュー(承認1件以上)を必須にする保護(branch protection または ruleset)を設定してください",
     };
   }
+  const slugs = botLogins.map((b) => b.replace(/\[bot\]$/, ""));
+  const bypassing = p.classic?.bypassApps ?? [];
+  if (bypassing.some((a) => slugs.includes(a))) {
+    return { ok: false, hint: `taskrail の App(${bypassing.filter((a) => slugs.includes(a)).join(", ")})がレビューをバイパスできます。バイパスの対象から外してください` };
+  }
+  if (bypassing.length || p.rulesetBypassApps.length) {
+    const who = [...bypassing, ...p.rulesetBypassApps.map((id) => `App ID ${id}`)].join(", ");
+    return { ok: "warn", hint: `レビューをバイパスできる App があります(${who})。taskrail の App が含まれていないか確認してください` };
+  }
+  return { ok: true, hint: "" };
+}
+
+/** GitHub の API 応答から、判定に使う事実を取り出す。 */
+export function protectionFacts(
+  classic: { ok: boolean; out: string; err: string },
+  rules: { ok: boolean; out: string; err: string },
+  getRuleset: (id: number) => string | null,
+): ProtectionFacts {
+  const json = <T>(text: string, fallback: T): T => {
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return fallback;
+    }
+  };
+  type Classic = {
+    required_pull_request_reviews?: {
+      required_approving_review_count?: number;
+      bypass_pull_request_allowances?: { apps?: { slug: string }[] };
+    };
+  };
+  const c = classic.ok ? json<Classic>(classic.out, {}) : null;
+  const ruleList = rules.ok
+    ? json<{ type: string; ruleset_id?: number; parameters?: { required_approving_review_count?: number } }[]>(rules.out, [])
+    : [];
+  const rulesetIds = [...new Set(ruleList.map((r) => r.ruleset_id).filter((id): id is number => typeof id === "number"))];
+  const bypass = rulesetIds.flatMap((id) => {
+    const r = json<{ bypass_actors?: { actor_id: number | null; actor_type: string }[] }>(getRuleset(id) ?? "", {});
+    return (r.bypass_actors ?? []).filter((a) => a.actor_type === "Integration" && a.actor_id !== null).map((a) => a.actor_id as number);
+  });
   return {
-    ok: false,
-    hint: "AIのトークンで直接 push・マージできないよう、保護(branch protection、または PR を必須にする ruleset)を設定してください",
+    classic: c
+      ? {
+          approvals: c.required_pull_request_reviews ? (c.required_pull_request_reviews.required_approving_review_count ?? 0) : -1,
+          bypassApps: (c.required_pull_request_reviews?.bypass_pull_request_allowances?.apps ?? []).map((a) => a.slug),
+        }
+      : null,
+    rules: ruleList.map((r) => ({ type: r.type, approvals: r.parameters?.required_approving_review_count ?? 0 })),
+    rulesetBypassApps: [...new Set(bypass)],
+    unavailable: [classic.err, rules.err].some((e) => /Upgrade to GitHub Pro|make this repository public/i.test(e)),
   };
 }
 

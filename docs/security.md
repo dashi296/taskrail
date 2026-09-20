@@ -15,6 +15,8 @@ taskrail は、リポジトリへの書き込み権限と API キーを持つエ
 | 承認を飛ばす遷移(inbox → ready など) | 遷移を主体ごとに定義し、許可されていない遷移では起動しない | `core/flow.ts` |
 | Issue コメントに偽の仕様・実行記録を書き込む | マーカーは `bot_logins`(Actions では App から自動設定)のコメントからだけ読む。成果物の中のコメント開始記号は無害化する | `core/record.ts`、`core/config.ts` |
 | AI が CI 定義や設定を書き換える | `protected_paths` の変更を検出したら push せずに止める | `commands/apply.ts` |
+| AI がルール文書(`CLAUDE.md`、`AGENTS.md`、`docs/constitution.md`)を書き換え、後続の工程(検証)を誘導する | ルール文書と `taskrail.yml` は、設定では外せない保護パスにする | `core/config.ts` |
+| CI が複数あるとき、一部の成功だけで検証へ進む | ブランチの先頭コミットの検査がすべて成功してから進める(`advance --require-checks`) | `commands/board.ts` |
 | 読み取り専用の工程で AI がコードを変更する | 作業ツリーに変更があれば違反として止める | `commands/apply.ts` |
 | 実装と検証の無限ループ、コストの暴走 | 差し戻しの上限、`--max-turns`、ジョブのタイムアウト、WIP 上限 | `core/flow.ts`、ワークフロー |
 | 配布元の改ざん | 導入先は taskrail をタグで参照する。実行時に外部の URL から指示を取得しない | `templates/` |
@@ -22,7 +24,8 @@ taskrail は、リポジトリへの書き込み権限と API キーを持つエ
 
 ## 導入時に必ず行うこと
 
-1. **既定ブランチを保護する。** レビュー必須、直接 push 禁止。App にバイパス権限を与えない。
+1. **既定ブランチを保護する。** レビュー必須(承認1件以上)、直接 push 禁止。App にバイパス権限を与えない。
+   `taskrail doctor` が、承認数とバイパスの設定まで確認します。
 2. **`bot_logins` を確認する。** Actions では GitHub App のログイン名が自動で入ります(`TASKRAIL_BOT_LOGIN`)。
    ローカル実行(`scripts/local-run.sh`)では空のままなので、Issue コメント内の記録を投稿者で絞り込みません。
    外部の人が書き込める Issue では、ローカル実行を使わないでください。

@@ -77,6 +77,7 @@ common(program
   .requiredOption("--branch <name>")
   .requiredOption("--to <stage>")
   .option("--from <stage>", "現在この stage のときだけ動かす")
+  .option("--require-checks", "ブランチの先頭コミットの検査(CI)がすべて成功しているときだけ動かす")
   .option("--dry-run")).action(advance);
 
 common(program.command("resume").description("blocked の Issue を、回答コメントをきっかけに再開する").requiredOption("--event <path>").option("--dry-run")).action(resume);

@@ -74,6 +74,17 @@ export const ProjectSchema = z
 
 export type Project = z.infer<typeof ProjectSchema>;
 
+/**
+ * 設定では外せない保護パス。エージェントが従うルール文書と taskrail の設定。
+ * これらを作業ブランチで書き換えられると、後続の工程(検証など)が改変された指示を読んでしまう。
+ */
+export const ENFORCED_PROTECTED_PATHS = ["taskrail.yml", "**/CLAUDE.md", "**/AGENTS.md", "docs/constitution.md"];
+
+/** 実際に強制する保護パス(設定 + 強制分)。 */
+export function protectedPaths(project: Pick<Project, "protected_paths">): string[] {
+  return [...new Set([...project.protected_paths, ...ENFORCED_PROTECTED_PATHS])];
+}
+
 function readYaml(path: string): unknown {
   return parse(readFileSync(path, "utf8"));
 }

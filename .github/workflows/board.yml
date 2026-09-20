@@ -88,7 +88,8 @@ jobs:
               $TASKRAIL resume --event "$ev" ;;
             workflow_run)
               [ "$(jq -r .workflow_run.conclusion "$ev")" = success ] || exit 0
-              $TASKRAIL advance --branch "$(jq -r .workflow_run.head_branch "$ev")" --from doing --to verify ;;
+              # CI が複数あっても、すべての検査が成功してから進める
+              $TASKRAIL advance --branch "$(jq -r .workflow_run.head_branch "$ev")" --from doing --to verify --require-checks ;;
             pull_request_review)
               [ "$(jq -r .review.state "$ev")" = changes_requested ] || exit 0
               $TASKRAIL advance --branch "$(jq -r .pull_request.head.ref "$ev")" --from review --to doing ;;

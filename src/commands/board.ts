@@ -53,7 +53,7 @@ export function dependencies(body: string): number[] {
 }
 
 /** CIの成功、レビューの修正依頼、マージなど、PR/MR側の出来事を列の移動に反映する。 */
-export function advance(opts: CommonOpts & { branch: string; to: string; from?: string }): void {
+export function advance(opts: CommonOpts & { branch: string; to: string; from?: string; requireChecks?: boolean }): void {
   if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
   const ctx = loadCtx(opts);
   const number = issueFromBranch(ctx.project.branch_prefix, opts.branch);
@@ -65,6 +65,11 @@ export function advance(opts: CommonOpts & { branch: string; to: string; from?: 
   if (stage.id === opts.to) return log(`#${number}: すでに ${opts.to} です`);
   if (!canTransition(ctx.flow, stage.id, opts.to, "system")) {
     return log(`#${number}: ${stage.id} → ${opts.to} は system に許可されていません`);
+  }
+  if (opts.requireChecks) {
+    // CI が複数あると workflow_run はそれぞれの完了で届く。すべての検査が成功した最後の1回だけで進める。
+    const checks = ctx.platform.branchChecks(opts.branch);
+    if (checks !== "success") return log(`#${number}: ${opts.branch} の検査が ${checks === "pending" ? "完了していません" : "失敗しています"}。${opts.to} には進めません`);
   }
   log(`#${number}: ${stage.id} → ${opts.to}`);
   if (!opts.dryRun) moveTo(ctx, issue, opts.to);
