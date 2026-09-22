@@ -80,7 +80,11 @@ common(program
   .description("その Issue で次に行うことを判定する(ローカル実行の進行に使う)")
   .requiredOption("--issue <n>")).action(next);
 
-common(program.command("dispatch").description("Ready の Issue を、WIP上限と依存関係を見て In Progress に進める").option("--dry-run")).action(dispatch);
+common(program
+  .command("dispatch")
+  .description("Ready の Issue を、WIP上限と依存関係を見て In Progress に進める")
+  .option("--local-checks", "CI の成功の代わりに、手元で check_commands を実行して In Progress → Verify を判定する")
+  .option("--dry-run")).action(dispatch);
 
 common(program
   .command("advance")
@@ -90,6 +94,7 @@ common(program
   .option("--from <stage>", "現在この stage のときだけ動かす")
   .option("--require-checks", "ブランチの先頭コミットの検査(CI)がすべて成功しているときだけ動かす")
   .option("--actor <login>", "きっかけになった人。write 以上の権限がなければ動かさない")
+  .option("--local-checks", "--require-checks の判定を、CI ではなく手元の check_commands で行う")
   .option("--dry-run")).action(advance);
 
 common(program.command("resume").description("blocked の Issue を、回答コメントをきっかけに再開する").requiredOption("--event <path>").option("--dry-run")).action(resume);

@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { canTransition, currentStage, flowLabel } from "../core/flow.js";
-import { issueFromBranch } from "../core/git.js";
+import { runChecks } from "../core/checks.js";
+import { fetchCommit, issueFromBranch } from "../core/git.js";
 import { implementedBranch, parseRuns } from "../core/record.js";
 import type { CiRun, Issue } from "../adapters/types.js";
 import { findEntryWorkflows, listedCiWorkflows } from "./setup.js";
@@ -11,6 +12,8 @@ interface CommonOpts {
   flow?: string;
   repo?: string;
   dryRun?: boolean;
+  /** CI の成功の代わりに、手元で check_commands を実行して判定する(ローカル運用)。 */
+  localChecks?: boolean;
 }
 
 /**
@@ -20,7 +23,7 @@ interface CommonOpts {
 export function dispatch(opts: CommonOpts): void {
   if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
   const ctx = loadCtx(opts);
-  recheckImplemented(ctx, expectedCiWorkflows(), opts.dryRun);
+  recheckImplemented(ctx, expectedCiWorkflows(), opts.dryRun, opts.localChecks);
   const doing = ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, "doing"));
   const verify = ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, "verify"));
   // 列を移した直後は API の一覧への反映が遅れ、同じ Issue が両方の列に出ることがあるため、番号で重複を除く。
@@ -64,13 +67,13 @@ export function dependencies(body: string): number[] {
  * 外部 CI などが後から完了した場合に取りこぼすため、定期実行でも確認する。
  * 1件の失敗(ブランチの削除、権限不足、API の一時的な障害)で、ほかの Issue や着手の判断を止めない。
  */
-export function recheckImplemented(ctx: Ctx, expectedCi: string[], dryRun?: boolean): void {
+export function recheckImplemented(ctx: Ctx, expectedCi: string[], dryRun?: boolean, localChecks?: boolean): void {
   for (const stage of ctx.flow.stages.filter((s) => s.mode === "write" && s.system_next.length)) {
     const to = stage.system_next[0]!;
     for (const issue of ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, stage.id))) {
       if (issue.labels.includes(ctx.flow.blocked_label)) continue;
       try {
-        const r = checksPassed(ctx, issue, stage.id, expectedCi);
+        const r = checksPassed(ctx, issue, stage.id, expectedCi, localChecks);
         if (!r.ok) continue;
         log(`#${issue.number}: ${r.branch} の検査がすべて成功しました。${stage.id} → ${to}`);
         if (!dryRun) moveTo(ctx, issue, to);
@@ -93,6 +96,7 @@ export function checksPassed(
   issue: Issue,
   stageId: string,
   expectedCi: string[],
+  localChecks?: boolean,
 ): { ok: true; branch: string } | { ok: false; why: string } {
   const label = flowLabel(ctx.flow, stageId);
   const entered = ctx.platform
@@ -104,6 +108,14 @@ export function checksPassed(
   if (!impl) return { ok: false, why: "この列に入った後の実装の完了の記録がありません(実装中、または差し戻し直後)" };
   const head = ctx.platform.branchHead(impl.branch);
   if (head !== impl.sha) return { ok: false, why: `${impl.branch} の先頭が実装の記録(${impl.sha.slice(0, 7)})と違います` };
+  if (localChecks) {
+    // ローカル運用では、CI の完了を待たずに手元で検査する。本番(Actions)とは判定の根拠が違う。
+    fetchCommit(impl.sha);
+    const r = runChecks(impl.sha, ctx.project.check_commands);
+    if (!r.ok) return { ok: false, why: `手元の検査: ${r.why}` };
+    if (ctx.platform.branchHead(impl.branch) !== impl.sha) return { ok: false, why: `${impl.branch} に検査中の push がありました` };
+    return { ok: true, branch: impl.branch };
+  }
   const checks = ctx.platform.commitChecks(impl.sha);
   if (checks !== "success") return { ok: false, why: `${impl.branch} の検査が${checks === "pending" ? "完了していません" : "失敗しています"}` };
   const missing = missingCiRuns(ctx.platform.ciRuns(impl.sha), expectedCi);
@@ -155,7 +167,7 @@ export function advanceIssue(ctx: Ctx, opts: AdvanceOpts, expectedCi: string[]):
   }
   if (opts.requireChecks) {
     // CI が複数あると workflow_run はそれぞれの完了で届く。すべての検査が成功した最後の1回だけで進める。
-    const r = checksPassed(ctx, issue, stage.id, expectedCi);
+    const r = checksPassed(ctx, issue, stage.id, expectedCi, opts.localChecks);
     if (!r.ok) return skip(`#${number}: ${r.why}。${opts.to} には進めません`);
     if (r.branch !== opts.branch) return skip(`#${number}: 実装の記録のブランチ(${r.branch})とイベントのブランチ(${opts.branch})が違います`);
   }

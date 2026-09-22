@@ -164,7 +164,12 @@ cd <導入先リポジトリ>                                   # 作業ツリ�
 /path/to/taskrail/scripts/local-flow.sh 12            # 承認待ち・blocked・完了まで進める
 MAX_STEPS=5 /path/to/taskrail/scripts/local-flow.sh 12
 CI_TIMEOUT=0 /path/to/taskrail/scripts/local-flow.sh 12  # CI を待たずに止める
+LOCAL_CHECKS=1 /path/to/taskrail/scripts/local-flow.sh 12 # CI を待たず、手元で check_commands を実行して判定する
 ```
+
+`LOCAL_CHECKS=1` は、設定の `check_commands` を、記録されたコミットだけを取り出した作業ツリーで実行します。
+手元の未コミットの変更は混ざりません。まっさらな checkout で動くコマンドにしてください(例: `npm ci && npm test`)。
+本番(Actions)は PR の CI の成功で判定するため、判定の根拠が異なります。
 
 止まるのは、仕様の承認、計画の承認、最終レビュー、`blocked`、着手できないとき、CI の待ち時間切れです。
 承認はラベルを手で付け替え、もう一度実行すると続きから進みます。
