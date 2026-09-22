@@ -10,6 +10,7 @@
 - GitLab: インターフェースと CI 雛形のみ
 - Claude Code プラグイン: `taskrail-init` `taskrail-doctor` `taskrail-issue`
 - `scripts/local-run.sh`: 1工程をローカルで実行する(route → `claude -p` → apply)
+- エージェントの認証は `ANTHROPIC_API_KEY` と `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`)のどちらでもよい
 - 修正: App が動かした列でエージェントが起動しない問題。route が `allowed_bots` を出力し、claude-code-action に渡す
 - 導入先に置くファイルを最小限にした。`init` は既定でリポジトリに何も置かない(ローカル実行専用)。`--ci` で自動実行の入口のワークフローを、`--docs` `--issue-template` `--config` で任意のファイルを置く
 - `.taskrail/` はコミットされない `.git/info/exclude` で除外する(`.gitignore` は変更しない)

@@ -100,7 +100,7 @@ export function init(opts: InitOptions): void {
   console.log(
     opts.ci
       ? `\n次の手順(README の「導入」を参照):
-  1. Secrets(ANTHROPIC_API_KEY、TASKRAIL_APP_ID、TASKRAIL_APP_PRIVATE_KEY)を設定する
+  1. Secrets(ANTHROPIC_API_KEY または CLAUDE_CODE_OAUTH_TOKEN、TASKRAIL_APP_ID、TASKRAIL_APP_PRIVATE_KEY)を設定する
   2. 必要なら、リポジトリ変数 TASKRAIL_CONFIG に設定を書く(check_commands、protected_paths など)
   3. taskrail labels sync を実行する
   4. taskrail doctor で確認する`
@@ -369,7 +369,12 @@ export function doctor(opts: { flow?: string; repo?: string; offline?: boolean }
         // Organization の Secrets のうち、このリポジトリから使えるもの。個人リポジトリでは取得できない(422)ので空とみなす。
         const orgSecrets = lines(trySh("gh", ["api", api("actions/organization-secrets"), "--jq", ".secrets[].name"]));
         const secrets = new Set([...names("secret"), ...orgSecrets]);
-        for (const s of ["ANTHROPIC_API_KEY", "TASKRAIL_APP_ID", "TASKRAIL_APP_PRIVATE_KEY"]) {
+        add(
+          "Secret ANTHROPIC_API_KEY または CLAUDE_CODE_OAUTH_TOKEN",
+          secrets.has("ANTHROPIC_API_KEY") || secrets.has("CLAUDE_CODE_OAUTH_TOKEN"),
+          "エージェントの認証をどちらかで設定してください(API キー、または claude setup-token で発行する OAuth トークン)",
+        );
+        for (const s of ["TASKRAIL_APP_ID", "TASKRAIL_APP_PRIVATE_KEY"]) {
           add(`Secret ${s}`, secrets.has(s), "リポジトリまたは Organization の Secrets に設定してください");
         }
         const enabled = names("variable").has("TASKRAIL_ENABLED");
