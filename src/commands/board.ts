@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { canTransition, currentStage, flowLabel } from "../core/flow.js";
+import { answersFor } from "../core/answers.js";
 import { runChecks } from "../core/checks.js";
 import { fetchCommit, issueFromBranch } from "../core/git.js";
 import { implementedBranch, parseRuns } from "../core/record.js";
@@ -97,6 +98,11 @@ export function checksPassed(
   stageId: string,
   expectedCi: string[],
   localChecks?: boolean,
+  /** テスト用。既定は記録した sha を取り出した作業ツリーで check_commands を実行する。 */
+  local: (sha: string, commands: string[]) => { ok: boolean; why: string } = (sha, commands) => {
+    fetchCommit(sha);
+    return runChecks(sha, commands);
+  },
 ): { ok: true; branch: string } | { ok: false; why: string } {
   const label = flowLabel(ctx.flow, stageId);
   const entered = ctx.platform
@@ -110,8 +116,7 @@ export function checksPassed(
   if (head !== impl.sha) return { ok: false, why: `${impl.branch} の先頭が実装の記録(${impl.sha.slice(0, 7)})と違います` };
   if (localChecks) {
     // ローカル運用では、CI の完了を待たずに手元で検査する。本番(Actions)とは判定の根拠が違う。
-    fetchCommit(impl.sha);
-    const r = runChecks(impl.sha, ctx.project.check_commands);
+    const r = local(impl.sha, ctx.project.check_commands);
     if (!r.ok) return { ok: false, why: `手元の検査: ${r.why}` };
     if (ctx.platform.branchHead(impl.branch) !== impl.sha) return { ok: false, why: `${impl.branch} に検査中の push がありました` };
     return { ok: true, branch: impl.branch };
@@ -176,6 +181,23 @@ export function advanceIssue(ctx: Ctx, opts: AdvanceOpts, expectedCi: string[]):
   return true;
 }
 
+/**
+ * Issue 番号を指定して再開する(ローカル実行用)。コメントのイベントが届かないため、
+ * 直近の blocked の記録より後にある、書き込み権限のある人の回答を自分で探す。
+ */
+export function resumeIssue(ctx: Ctx, number: number, dryRun?: boolean): void {
+  const issue = ctx.platform.getIssue(number);
+  if (!issue.labels.includes(ctx.flow.blocked_label)) return log(`#${number}: blocked ではありません`);
+  const stage = currentStage(ctx.flow, issue.labels);
+  if (!stage) return log(`#${number}: flow ラベルが1つに定まりません`);
+  const answers = answersFor(ctx, stage.id, ctx.platform.listComments(number));
+  if (!answers.length) return log(`#${number}: 権限のある人の回答がありません`);
+  log(`#${number}: @${answers[answers.length - 1]!.author} の回答で ${stage.id} を再開します`);
+  if (dryRun) return;
+  ctx.platform.removeLabel(number, ctx.flow.blocked_label);
+  moveTo(ctx, ctx.platform.getIssue(number), stage.id);
+}
+
 /** 監視している CI の名前。入口ワークフロー(既定ブランチのもの)の workflow_run.workflows。なければ空(ローカル実行)。 */
 function expectedCiWorkflows(cwd = process.cwd()): string[] {
   const entry = findEntryWorkflows(cwd)[0];
@@ -183,9 +205,11 @@ function expectedCiWorkflows(cwd = process.cwd()): string[] {
 }
 
 /** blocked のIssueに、権限のある人が回答コメントを書いたら再開する。 */
-export function resume(opts: CommonOpts & { event: string }): void {
+export function resume(opts: CommonOpts & { event?: string; issue?: string }): void {
   if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
   const ctx = loadCtx(opts);
+  if (opts.issue) return resumeIssue(ctx, Number(opts.issue), opts.dryRun);
+  if (!opts.event) return log("--event か --issue のどちらかが必要です");
   const ev = JSON.parse(readFileSync(opts.event, "utf8")) as {
     issue?: { number: number; pull_request?: unknown };
     comment?: { user: { login: string; type: string } };

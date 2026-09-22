@@ -12,6 +12,7 @@
 - `scripts/local-run.sh`: 1工程をローカルで実行する(route → `claude -p` → apply)
 - `scripts/local-flow.sh`: 人間の判断が必要な位置まで工程を連続実行する。次の一手は `taskrail next` が決める
 - `dispatch` / `advance` の `--local-checks`: CI の成功の代わりに、手元で `check_commands` を実行して In Progress → Verify を判定する
+- `resume --issue <n>`: ローカルで blocked を再開する(回答は write 以上の人のコメントだけを読む)
 - エージェントの認証は `ANTHROPIC_API_KEY` と `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`)のどちらでもよい
 - 修正: App が動かした列でエージェントが起動しない問題。route が `allowed_bots` を出力し、claude-code-action に渡す
 - 導入先に置くファイルを最小限にした。`init` は既定でリポジトリに何も置かない(ローカル実行専用)。`--ci` で自動実行の入口のワークフローを、`--docs` `--issue-template` `--config` で任意のファイルを置く

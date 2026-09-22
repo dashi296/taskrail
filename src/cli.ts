@@ -97,7 +97,12 @@ common(program
   .option("--local-checks", "--require-checks の判定を、CI ではなく手元の check_commands で行う")
   .option("--dry-run")).action(advance);
 
-common(program.command("resume").description("blocked の Issue を、回答コメントをきっかけに再開する").requiredOption("--event <path>").option("--dry-run")).action(resume);
+common(program
+  .command("resume")
+  .description("blocked の Issue を、回答コメントをきっかけに再開する")
+  .option("--event <path>", "イベントのJSON(GitHub では $GITHUB_EVENT_PATH)")
+  .option("--issue <n>", "Issue番号を指定して再開する(ローカル実行用)")
+  .option("--dry-run")).action(resume);
 
 program.parseAsync().catch((e: Error) => {
   console.error(`[taskrail] エラー: ${e.message}`);

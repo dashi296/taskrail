@@ -40,7 +40,8 @@ fi
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 get() { grep "^$1=" "$out" | tail -1 | cut -d= -f2- || true; }
-labels_of() { gh issue view "$issue" --json labels --jq '[.labels[].name] | sort | join(",")'; }
+labels_of() { gh issue view "$issue" --json labels --jq '.labels[].name' | sort; }
+has_label() { labels_of | grep -qxF "$1"; }
 
 ci_waited=0
 for ((step = 1; step <= max_steps; step++)); do
@@ -73,10 +74,15 @@ for ((step = 1; step <= max_steps; step++)); do
         sleep $((attempt * 15))
       done
       ;;
+    resume)
+      say "[$step] 回答を確認して再開します"
+      ci_waited=0
+      "${taskrail[@]}" resume --issue "$issue"
+      ;;
     check-ci)
       # dispatch は着手の判断に加えて、実装済み Issue の検査を再確認して verify へ進める。
       "${taskrail[@]}" dispatch "${dispatch_args[@]}"
-      if [[ ",$(labels_of)," != *",flow::$stage,"* ]]; then
+      if ! has_label "flow::$stage"; then
         continue
       fi
       if [ "${LOCAL_CHECKS:-}" = 1 ]; then
