@@ -9,8 +9,9 @@
 #   stop      … 人間の承認待ち、blocked、完了。ここで止まる
 #
 # 環境変数:
-#   MAX_STEPS   … 進める工程の上限(既定 20)
-#   CI_TIMEOUT  … CI を待つ秒数(既定 1200)。0 で待たずに止まる
+#   MAX_STEPS    … 進める工程の上限(既定 20)
+#   CI_TIMEOUT   … CI を待つ秒数(既定 1200)。0 で待たずに止まる
+#   LOCAL_CHECKS … 1 で、CI の成功を待たずに手元で check_commands を実行して判定する
 set -euo pipefail
 
 die() { echo "[local-flow] $*" >&2; exit 1; }
@@ -20,6 +21,8 @@ issue="${1:-}"
 [[ "$issue" =~ ^[0-9]+$ ]] || die "使い方: local-flow.sh <issue番号>"
 max_steps="${MAX_STEPS:-20}"
 ci_timeout="${CI_TIMEOUT:-1200}"
+dispatch_args=()
+[ "${LOCAL_CHECKS:-}" = 1 ] && dispatch_args+=(--local-checks)
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$root/dist/cli.js" ] || die "$root で npm ci && npm run build を先に実行してください"
@@ -63,7 +66,7 @@ for ((step = 1; step <= max_steps; step++)); do
       before="$(labels_of)"
       # 列を移した直後は GitHub の検索に反映されるまで数十秒かかる。数回試してから諦める。
       for attempt in 1 2 3; do
-        "${taskrail[@]}" dispatch
+        "${taskrail[@]}" dispatch "${dispatch_args[@]}"
         [ "$(labels_of)" = "$before" ] || break
         [ "$attempt" = 3 ] && { say "停止: 着手できません(WIP上限、依存、ai::ok の未付与のいずれか)"; exit 0; }
         say "着手されませんでした。$((attempt * 15)) 秒後にもう一度試します"
@@ -71,10 +74,14 @@ for ((step = 1; step <= max_steps; step++)); do
       done
       ;;
     check-ci)
-      # dispatch は着手の判断に加えて、実装済み Issue の CI を再確認して verify へ進める。
-      "${taskrail[@]}" dispatch
+      # dispatch は着手の判断に加えて、実装済み Issue の検査を再確認して verify へ進める。
+      "${taskrail[@]}" dispatch "${dispatch_args[@]}"
       if [[ ",$(labels_of)," != *",flow::$stage,"* ]]; then
         continue
+      fi
+      if [ "${LOCAL_CHECKS:-}" = 1 ]; then
+        say "停止: 手元の検査が通りませんでした。$stage のまま止まります"
+        exit 0
       fi
       if [ "$ci_waited" -ge "$ci_timeout" ]; then
         say "停止: CI が $ci_timeout 秒以内に成功しませんでした。PR の CI を確認してください"

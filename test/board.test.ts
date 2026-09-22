@@ -1,7 +1,12 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { advanceIssue, checksPassed, missingCiRuns, recheckImplemented } from "../src/commands/board.js";
 import { staleReason } from "../src/commands/apply.js";
 import { nextStep } from "../src/commands/next.js";
+import { runChecks } from "../src/core/checks.js";
 import { renderComment, type RunRecord } from "../src/core/record.js";
 import { FakePlatform, fakeCtx } from "./fakes.js";
 
@@ -184,5 +189,32 @@ describe("ローカル実行の進行(next)", () => {
   });
   it("信頼しない投稿者の記録は見ない", () => {
     expect(step(["flow::spec"], (p) => p.addComment(1, record("spec", "pass"), "attacker"))).toMatchObject({ action: "run-stage" });
+  });
+});
+
+describe("手元の check_commands による判定(--local-checks)", () => {
+  const repo = () => {
+    const d = mkdtempSync(join(tmpdir(), "taskrail-checks-"));
+    const g = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: d, encoding: "utf8" });
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(d, "a"), "1\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    return { d, sha: g("rev-parse", "HEAD").trim() };
+  };
+
+  it("すべて成功すれば ok、1つでも失敗すれば理由を返す", () => {
+    const { d, sha } = repo();
+    expect(runChecks(sha, ["test -f a"], d)).toMatchObject({ ok: true });
+    expect(runChecks(sha, ["test -f a", "test -f none"], d)).toMatchObject({ ok: false, why: "test -f none が失敗しました" });
+  });
+  it("check_commands が空なら進めない", () => {
+    const { d, sha } = repo();
+    expect(runChecks(sha, [], d)).toMatchObject({ ok: false });
+  });
+  it("手元の作業ツリーの変更は判定に混ざらない(記録したコミットの内容で実行する)", () => {
+    const { d, sha } = repo();
+    writeFileSync(join(d, "b"), "2\n");
+    expect(runChecks(sha, ["test ! -f b"], d)).toMatchObject({ ok: true });
   });
 });
