@@ -105,6 +105,13 @@ describe("プロンプトの組み立て", () => {
     expect(review).not.toContain("<spec note");
     expect(review).toContain("git diff origin/main...HEAD");
   });
+  it("コメント全体を渡さない工程にも、blocked の質問への回答は渡す", () => {
+    const answers = [comment("回答です", "alice")];
+    expect(buildPrompt({ ...ctx, agent: "triage", answers })).toContain("<answers note");
+    // spec はコメント全体を渡すので、重複させない。
+    expect(buildPrompt({ ...ctx, agent: "spec", answers })).not.toContain("<answers note");
+    expect(buildPrompt({ ...ctx, agent: "triage" })).not.toContain("<answers note");
+  });
   it("入力がタグを閉じられないようにする", () => {
     const p = buildPrompt({ ...ctx, agent: "triage" });
     expect(p.match(/<\/issue>/g)).toHaveLength(1);

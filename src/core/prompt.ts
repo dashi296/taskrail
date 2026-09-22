@@ -10,6 +10,8 @@ export interface PromptContext {
   issue: Issue;
   /** 人間が書いたコメント(taskrail 自身のコメントを除く)。 */
   humanComments: Comment[];
+  /** blocked の質問への回答(直近の blocked の記録より後の人間のコメント)。どの工程にも渡す。 */
+  answers?: Comment[];
   spec: string | null;
   plan: string | null;
   feedback: string[];
@@ -100,6 +102,11 @@ export function buildPrompt(ctx: PromptContext): string {
   if (needs.comments && ctx.humanComments.length) {
     const text = ctx.humanComments.map((c) => `[${c.author} ${c.createdAt}]\n${stripMarkers(c.body)}`).join("\n\n");
     parts.push(tag("comments", text.slice(-MAX_COMMENT_CHARS), "人間のコメント(質問への回答を含む)"));
+  }
+  // コメント全体を渡していない工程でも、質問への回答だけは渡す(渡さないと blocked から再開できない)。
+  if (!needs.comments && ctx.answers?.length) {
+    const text = ctx.answers.map((c) => `[${c.author} ${c.createdAt}]\n${stripMarkers(c.body)}`).join("\n\n");
+    parts.push(tag("answers", text.slice(-MAX_COMMENT_CHARS), "前回の blocked の質問への回答"));
   }
   if (needs.feedback && ctx.feedback.length) {
     parts.push(tag("feedback", ctx.feedback.join("\n\n---\n\n"), "差し戻しの指摘。これへの対応が最優先"));

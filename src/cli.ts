@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { apply } from "./commands/apply.js";
 import { advance, dispatch, resume } from "./commands/board.js";
 import { metrics } from "./commands/metrics.js";
+import { next } from "./commands/next.js";
 import { route } from "./commands/route.js";
 import { doctor, init, labelsSync, update, validate } from "./commands/setup.js";
 import { packageVersion } from "./core/config.js";
@@ -73,6 +74,11 @@ common(program
   .requiredOption("--issue <n>")
   .requiredOption("--stage <id>")
   .option("--dry-run", "書き込まず、投稿するコメントを表示する")).action(apply);
+
+common(program
+  .command("next")
+  .description("その Issue で次に行うことを判定する(ローカル実行の進行に使う)")
+  .requiredOption("--issue <n>")).action(next);
 
 common(program.command("dispatch").description("Ready の Issue を、WIP上限と依存関係を見て In Progress に進める").option("--dry-run")).action(dispatch);
 
