@@ -37,6 +37,7 @@ fi
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 get() { grep "^$1=" "$out" | tail -1 | cut -d= -f2- || true; }
+labels_of() { gh issue view "$issue" --json labels --jq '[.labels[].name] | sort | join(",")'; }
 
 ci_waited=0
 for ((step = 1; step <= max_steps; step++)); do
@@ -59,18 +60,20 @@ for ((step = 1; step <= max_steps; step++)); do
     dispatch)
       say "[$step] 着手できるか判定します"
       ci_waited=0
-      before="$(gh issue view "$issue" --json labels --jq '[.labels[].name] | join(",")')"
-      "${taskrail[@]}" dispatch
-      after="$(gh issue view "$issue" --json labels --jq '[.labels[].name] | join(",")')"
-      if [ "$before" = "$after" ]; then
-        say "停止: 着手できません(WIP上限、依存、ai::ok の未付与のいずれか)"
-        exit 0
-      fi
+      before="$(labels_of)"
+      # 列を移した直後は GitHub の検索に反映されるまで数十秒かかる。数回試してから諦める。
+      for attempt in 1 2 3; do
+        "${taskrail[@]}" dispatch
+        [ "$(labels_of)" = "$before" ] || break
+        [ "$attempt" = 3 ] && { say "停止: 着手できません(WIP上限、依存、ai::ok の未付与のいずれか)"; exit 0; }
+        say "着手されませんでした。$((attempt * 15)) 秒後にもう一度試します"
+        sleep $((attempt * 15))
+      done
       ;;
     check-ci)
       # dispatch は着手の判断に加えて、実装済み Issue の CI を再確認して verify へ進める。
       "${taskrail[@]}" dispatch
-      if [ "$(gh issue view "$issue" --json labels --jq '[.labels[].name] | map(select(startswith("flow::"))) | join(",")')" != "flow::$stage" ]; then
+      if [[ ",$(labels_of)," != *",flow::$stage,"* ]]; then
         continue
       fi
       if [ "$ci_waited" -ge "$ci_timeout" ]; then
