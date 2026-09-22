@@ -154,6 +154,21 @@ taskrail route --issue 12 --stage spec --no-checkout   # .taskrail/run/ にプ�
 taskrail apply --issue 12 --stage spec --dry-run       # 投稿されるコメントを表示(書き込まない)
 ```
 
+### ローカルで回す
+
+`scripts/local-flow.sh` は、人間の判断が必要な位置まで工程を連続で進めます。
+次に何をするかは `taskrail next`(決定的)が決め、スクリプトはそれに従うだけです。
+
+```sh
+cd <導入先リポジトリ>                                   # 作業ツリーはクリーンにしておく
+/path/to/taskrail/scripts/local-flow.sh 12            # 承認待ち・blocked・完了まで進める
+MAX_STEPS=5 /path/to/taskrail/scripts/local-flow.sh 12
+CI_TIMEOUT=0 /path/to/taskrail/scripts/local-flow.sh 12  # CI を待たずに止める
+```
+
+止まるのは、仕様の承認、計画の承認、最終レビュー、`blocked`、着手できないとき、CI の待ち時間切れです。
+承認はラベルを手で付け替え、もう一度実行すると続きから進みます。
+
 ### ローカルで1工程ずつ回す
 
 GitHub App や `ANTHROPIC_API_KEY` がなくても、`scripts/local-run.sh` で route → エージェント → apply を手元で実行できます。
@@ -166,7 +181,7 @@ cd <導入先リポジトリ>                                  # 作業ツリー
 DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まずに表示だけ
 ```
 
-- 列を動かしても次の工程は自動では起動しません。工程ごとに実行し直します。
+- 列を動かしても次の工程は自動では起動しません。工程ごとに実行し直します(`local-flow.sh` はこれを繰り返します)。
 - 人間の操作(仕様・計画の承認)はラベルを手で付け替えます。
 - AIを使わない遷移はコマンドで行います。ready → doing は `taskrail dispatch`、CI 成功後の doing → verify は `taskrail advance --branch <作業ブランチ> --from doing --to verify --require-checks` です(`--require-checks` は、ブランチの検査がすべて成功していなければ進めません)。
   `local-run.sh` で書いた記録は `gh` のログインユーザー名義なので、これらのコマンドには `TASKRAIL_RECORD_AUTHOR` を与えます(与えないと記録を読まず、doing → verify に進みません)。

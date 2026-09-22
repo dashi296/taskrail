@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { advanceIssue, checksPassed, missingCiRuns, recheckImplemented } from "../src/commands/board.js";
 import { staleReason } from "../src/commands/apply.js";
+import { nextStep } from "../src/commands/next.js";
 import { renderComment, type RunRecord } from "../src/core/record.js";
 import { FakePlatform, fakeCtx } from "./fakes.js";
 
@@ -129,5 +130,59 @@ describe("apply: 古い実行の結果を反映しない", () => {
     expect(staleReason(ctx, p.getIssue(1), "verify")).toMatch(/blocked/);
     p.addIssue(2, ["flow::verify"]);
     expect(staleReason(ctx, { ...p.getIssue(2), state: "closed" }, "verify")).toMatch(/閉じられ/);
+  });
+});
+
+describe("ローカル実行の進行(next)", () => {
+  const step = (labels: string[], build?: (p: FakePlatform) => void) => {
+    const p = new FakePlatform();
+    p.addIssue(1, labels);
+    build?.(p);
+    return nextStep(fakeCtx(p), p.getIssue(1));
+  };
+
+  it("エージェントのいる列で、その列に入ってからの記録がなければ実行する", () => {
+    expect(step(["flow::spec"])).toMatchObject({ action: "run-stage", stage: "spec" });
+  });
+  it("承認待ちの列(記録が pass で、列を動かすのが人間)では止まる", () => {
+    expect(step(["flow::spec"], (p) => p.addComment(1, record("spec", "pass")))).toMatchObject({ action: "stop", stage: "spec" });
+  });
+  it("ready では着手の判定に進む", () => {
+    expect(step(["flow::ready", "ai::ok"])).toMatchObject({ action: "dispatch", stage: "ready" });
+  });
+  it("実装が pass なら CI の確認に進む", () => {
+    expect(step(["flow::doing"], (p) => p.addComment(1, record("doing", "pass", { branch: "issue-1-x", sha: SHA })))).toMatchObject({
+      action: "check-ci",
+      stage: "doing",
+    });
+  });
+  it("列に入り直した後は、前の記録を見ずにもう一度実行する", () => {
+    expect(
+      step(["flow::doing"], (p) => {
+        p.addComment(1, record("doing", "pass", { branch: "issue-1-x", sha: SHA }));
+        p.removeLabel(1, "flow::doing");
+        p.addLabels(1, ["flow::doing"]);
+      }),
+    ).toMatchObject({ action: "run-stage", stage: "doing" });
+  });
+  it("blocked の記録は、人間の回答があればやり直す", () => {
+    expect(step(["flow::inbox"], (p) => p.addComment(1, record("inbox", "blocked")))).toMatchObject({ action: "stop", stage: "inbox" });
+    expect(
+      step(["flow::inbox"], (p) => {
+        p.addComment(1, record("inbox", "blocked"));
+        p.addComment(1, "こう進めてください", "human");
+      }),
+    ).toMatchObject({ action: "run-stage", stage: "inbox" });
+  });
+  it("記録が fail・blocked・閉じた Issue・人間の列では止まる", () => {
+    expect(step(["flow::verify"], (p) => p.addComment(1, record("verify", "fail")))).toMatchObject({ action: "stop" });
+    expect(step(["flow::spec", "blocked"])).toMatchObject({ action: "stop" });
+    expect(step(["flow::review"])).toMatchObject({ action: "stop", stage: "review" });
+    const p = new FakePlatform();
+    p.addIssue(1, ["flow::spec"]);
+    expect(nextStep(fakeCtx(p), { ...p.getIssue(1), state: "closed" })).toMatchObject({ action: "stop" });
+  });
+  it("信頼しない投稿者の記録は見ない", () => {
+    expect(step(["flow::spec"], (p) => p.addComment(1, record("spec", "pass"), "attacker"))).toMatchObject({ action: "run-stage" });
   });
 });
