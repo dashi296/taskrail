@@ -1,6 +1,7 @@
 import type { Issue } from "../adapters/types.js";
 import { type Ctx, loadCtx, log, setOutputs, trustedAuthors } from "../core/context.js";
 import { currentStage, flowLabel } from "../core/flow.js";
+import { answersFor } from "../core/answers.js";
 import { parseRuns, type PostedRun } from "../core/record.js";
 
 export interface NextStep {
@@ -8,7 +9,7 @@ export interface NextStep {
    * run-stage: その列のエージェントを実行する / dispatch: ready → doing(WIP上限と依存を見る)
    * check-ci: 実装の CI を確認して doing → verify / stop: 人間の操作待ち、または終了
    */
-  action: "run-stage" | "dispatch" | "check-ci" | "stop";
+  action: "run-stage" | "dispatch" | "check-ci" | "resume" | "stop";
   stage: string | null;
   reason: string;
 }
@@ -20,11 +21,15 @@ export interface NextStep {
 export function nextStep(ctx: Ctx, issue: Issue): NextStep {
   const stop = (reason: string, stage: string | null = null): NextStep => ({ action: "stop", stage, reason });
   if (issue.state !== "open") return stop("Issue は閉じられています");
-  if (issue.labels.includes(ctx.flow.blocked_label)) {
-    return stop(`${ctx.flow.blocked_label} です。質問に回答し、ラベルを外してください`);
-  }
   const stage = currentStage(ctx.flow, issue.labels);
   if (!stage) return stop("flow ラベルが1つに定まりません");
+  if (issue.labels.includes(ctx.flow.blocked_label)) {
+    // 権限のある人の回答があれば再開する(Actions では resume が同じ判断をする)。
+    if (answersFor(ctx, stage.id, ctx.platform.listComments(issue.number)).length) {
+      return { action: "resume", stage: stage.id, reason: "質問への回答があるので再開します" };
+    }
+    return stop(`${ctx.flow.blocked_label} です。質問に回答してください`, stage.id);
+  }
 
   if (!stage.agents.length) {
     // dispatch が見るのは ready の列(board.ts の dispatch と同じ)。review や done は人間が動かす。
@@ -35,8 +40,8 @@ export function nextStep(ctx: Ctx, issue: Issue): NextStep {
   const last = lastRunInStage(ctx, issue, stage.id);
   if (!last) return { action: "run-stage", stage: stage.id, reason: `${stage.title} のエージェントを実行します` };
   if (last.status === "blocked") {
-    // 質問に人間が答えていれば、その回答を入力にしてもう一度実行する(Actions の resume と同じ判断)。
-    if (answeredAfter(ctx, issue, last.postedAt)) {
+    // blocked ラベルを人が外した後も、回答があればもう一度実行する。
+    if (answersFor(ctx, stage.id, ctx.platform.listComments(issue.number)).length) {
       return { action: "run-stage", stage: stage.id, reason: "質問への回答があるので、もう一度実行します" };
     }
     return stop(`${stage.title} の質問に回答するとやり直せます`, stage.id);
@@ -57,18 +62,6 @@ function lastRunInStage(ctx: Ctx, issue: Issue, stageId: string): PostedRun | nu
     (r) => r.stage === stageId && (!entered || Date.parse(r.postedAt) > Date.parse(entered)),
   );
   return runs[runs.length - 1] ?? null;
-}
-
-/** その時刻より後に、人間(taskrail の記録でも bot でもない投稿者)のコメントがあるか。 */
-function answeredAfter(ctx: Ctx, issue: Issue, at: string): boolean {
-  return ctx.platform
-    .listComments(issue.number)
-    .some(
-      (c) =>
-        Date.parse(c.createdAt) > Date.parse(at) &&
-        !ctx.project.bot_logins.includes(c.author) &&
-        parseRuns([c]).length === 0,
-    );
 }
 
 export function next(opts: { issue: string; flow?: string; repo?: string }): void {

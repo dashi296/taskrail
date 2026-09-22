@@ -1,11 +1,11 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Comment } from "../adapters/types.js";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { canTransition, flowLabel, stageFromLabel } from "../core/flow.js";
 import { excludeTaskrailDir, git, resolveBranch, tryGit } from "../core/git.js";
 import { buildPrompt, repoRules } from "../core/prompt.js";
-import { latestArtifact, latestFailureFeedback, parseRuns, type PostedRun } from "../core/record.js";
+import { answersFor } from "../core/answers.js";
+import { latestArtifact, latestFailureFeedback, parseRuns } from "../core/record.js";
 
 export const RUN_DIR = ".taskrail/run";
 /** 作業ブランチの差分を見るエージェント(読み取り工程でも作業ブランチに切り替える)。 */
@@ -101,7 +101,7 @@ export function route(opts: RouteOptions): void {
 
   const isTaskrailComment = (body: string) => parseRuns([{ id: 0, author: "", body, createdAt: "" }]).length > 0;
   const humanComments = comments.filter((c) => !isTaskrailComment(c.body) && !ctx.project.bot_logins.includes(c.author));
-  const answers = answersTo(stage.id, parseRuns(comments, trusted), humanComments);
+  const answers = answersFor(ctx, stage.id, comments);
 
   const outputs: Record<string, string | number | boolean> = {
     run: true,
@@ -143,13 +143,6 @@ export function route(opts: RouteOptions): void {
   writeFileSync(join(RUN_DIR, "route.json"), JSON.stringify(outputs, null, 2));
   log(`#${issue.number} ${stage.id}: ${stage.agents.join(" → ")} を実行します`);
   setOutputs(outputs);
-}
-
-/** 直近の blocked の記録より後に書かれた人間のコメント。質問への回答として、どの工程にも渡す。 */
-function answersTo(stageId: string, runs: PostedRun[], humanComments: Comment[]): Comment[] {
-  const blocked = runs.filter((r) => r.stage === stageId && r.status === "blocked").pop();
-  if (!blocked) return [];
-  return humanComments.filter((c) => Date.parse(c.createdAt) > Date.parse(blocked.postedAt));
 }
 
 /** ベースブランチとの差分とコミットの一覧を RUN_DIR に書き出す。 */

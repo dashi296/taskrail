@@ -188,6 +188,7 @@ DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まず
 
 - 列を動かしても次の工程は自動では起動しません。工程ごとに実行し直します(`local-flow.sh` はこれを繰り返します)。
 - 人間の操作(仕様・計画の承認)はラベルを手で付け替えます。
+- blocked の再開は、Issue に回答を書いてから `taskrail resume --issue <n>`(`local-flow.sh` は自動で行います)。回答として読むのは write 以上の人のコメントだけです。
 - AIを使わない遷移はコマンドで行います。ready → doing は `taskrail dispatch`、CI 成功後の doing → verify は `taskrail advance --branch <作業ブランチ> --from doing --to verify --require-checks` です(`--require-checks` は、ブランチの検査がすべて成功していなければ進めません)。
   `local-run.sh` で書いた記録は `gh` のログインユーザー名義なので、これらのコマンドには `TASKRAIL_RECORD_AUTHOR` を与えます(与えないと記録を読まず、doing → verify に進みません)。
 

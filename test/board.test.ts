@@ -3,9 +3,10 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { advanceIssue, checksPassed, missingCiRuns, recheckImplemented } from "../src/commands/board.js";
+import { advanceIssue, checksPassed, missingCiRuns, recheckImplemented, resumeIssue } from "../src/commands/board.js";
 import { staleReason } from "../src/commands/apply.js";
 import { nextStep } from "../src/commands/next.js";
+import { answersFor } from "../src/core/answers.js";
 import { runChecks } from "../src/core/checks.js";
 import { renderComment, type RunRecord } from "../src/core/record.js";
 import { FakePlatform, fakeCtx } from "./fakes.js";
@@ -170,14 +171,41 @@ describe("ローカル実行の進行(next)", () => {
       }),
     ).toMatchObject({ action: "run-stage", stage: "doing" });
   });
-  it("blocked の記録は、人間の回答があればやり直す", () => {
+  it("blocked の記録は、権限のある人の回答があればやり直す", () => {
     expect(step(["flow::inbox"], (p) => p.addComment(1, record("inbox", "blocked")))).toMatchObject({ action: "stop", stage: "inbox" });
+    // 権限のない人のコメントは回答として扱わない。
     expect(
       step(["flow::inbox"], (p) => {
+        p.addComment(1, record("inbox", "blocked"));
+        p.addComment(1, "こう進めてください", "outsider");
+      }),
+    ).toMatchObject({ action: "stop", stage: "inbox" });
+    expect(
+      step(["flow::inbox"], (p) => {
+        p.permissions.set("human", "write");
         p.addComment(1, record("inbox", "blocked"));
         p.addComment(1, "こう進めてください", "human");
       }),
     ).toMatchObject({ action: "run-stage", stage: "inbox" });
+  });
+  it("blocked ラベルが付いていても、回答があれば再開する(なければ止まる)", () => {
+    expect(step(["flow::inbox", "blocked"], (p) => p.addComment(1, record("inbox", "blocked")))).toMatchObject({ action: "stop" });
+    expect(
+      step(["flow::inbox", "blocked"], (p) => {
+        p.permissions.set("human", "write");
+        p.addComment(1, record("inbox", "blocked"));
+        p.addComment(1, "回答です", "human");
+      }),
+    ).toMatchObject({ action: "resume", stage: "inbox" });
+  });
+  it("工程がもう一度動いた後は、古い回答を渡さない", () => {
+    const p = new FakePlatform();
+    p.addIssue(1, ["flow::doing"]);
+    p.permissions.set("human", "write");
+    p.addComment(1, record("doing", "blocked"));
+    p.addComment(1, "回答です", "human");
+    p.addComment(1, record("doing", "pass", { branch: "issue-1-x", sha: SHA }));
+    expect(answersFor(fakeCtx(p), "doing", p.listComments(1))).toEqual([]);
   });
   it("記録が fail・blocked・閉じた Issue・人間の列では止まる", () => {
     expect(step(["flow::verify"], (p) => p.addComment(1, record("verify", "fail")))).toMatchObject({ action: "stop" });
@@ -216,5 +244,52 @@ describe("手元の check_commands による判定(--local-checks)", () => {
     const { d, sha } = repo();
     writeFileSync(join(d, "b"), "2\n");
     expect(runChecks(sha, ["test ! -f b"], d)).toMatchObject({ ok: true });
+  });
+});
+
+describe("--local-checks の分岐", () => {
+  let p: FakePlatform;
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    p = new FakePlatform();
+    p.addIssue(1, ["flow::doing"]);
+    p.addComment(1, record("doing", "pass", { branch: "issue-1-x", sha: SHA }));
+    p.heads.set("issue-1-x", SHA);
+    p.checks.set(SHA, "failure"); // GitHub 側は失敗・未実行でも、手元の検査だけで判定する
+  });
+  const passed = (local: (sha: string, cmds: string[]) => { ok: boolean; why: string }) =>
+    checksPassed(fakeCtx(p), p.getIssue(1), "doing", ["CI"], true, local);
+
+  it("手元の検査が成功すれば、GitHub 側の検査を見ずに進める", () => {
+    expect(passed(() => ({ ok: true, why: "" }))).toEqual({ ok: true, branch: "issue-1-x" });
+  });
+  it("手元の検査が失敗すれば進めない", () => {
+    expect(passed(() => ({ ok: false, why: "npm test が失敗しました" }))).toMatchObject({ ok: false });
+  });
+  it("検査中に push されていれば進めない", () => {
+    expect(
+      passed(() => {
+        p.heads.set("issue-1-x", "d".repeat(40));
+        return { ok: true, why: "" };
+      }),
+    ).toMatchObject({ ok: false });
+  });
+  it("指定しなければ、これまでどおり GitHub 側の検査で判定する", () => {
+    expect(checksPassed(fakeCtx(p), p.getIssue(1), "doing", ["CI"])).toMatchObject({ ok: false });
+  });
+});
+
+describe("resume --issue(ローカル実行)", () => {
+  it("権限のある人の回答があれば blocked を外して列を付け直す", () => {
+    const p = new FakePlatform();
+    p.addIssue(1, ["flow::spec", "blocked"]);
+    p.addComment(1, record("spec", "blocked"));
+    resumeIssue(fakeCtx(p), 1);
+    expect(p.getIssue(1).labels).toContain("blocked");
+    p.permissions.set("human", "write");
+    p.addComment(1, "回答です", "human");
+    resumeIssue(fakeCtx(p), 1);
+    expect(p.getIssue(1).labels).not.toContain("blocked");
+    expect(p.getIssue(1).labels).toContain("flow::spec");
   });
 });
