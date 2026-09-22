@@ -92,7 +92,8 @@ CI が複数あっても、作業ブランチの検査がすべて成功して�
 
 | 種類 | 名前 | 値 |
 | --- | --- | --- |
-| Secret | `ANTHROPIC_API_KEY` | Anthropic の API キー |
+| Secret | `ANTHROPIC_API_KEY` | Anthropic の API キー(下の `CLAUDE_CODE_OAUTH_TOKEN` とどちらか) |
+| Secret | `CLAUDE_CODE_OAUTH_TOKEN` | Claude のサブスクリプションで動かす場合。`claude setup-token` で発行する |
 | Secret | `TASKRAIL_APP_ID` | GitHub App の App ID |
 | Secret | `TASKRAIL_APP_PRIVATE_KEY` | GitHub App の秘密鍵 |
 | Variable | `TASKRAIL_ENABLED` | `true`(`false` で全体を停止) |
