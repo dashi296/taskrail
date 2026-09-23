@@ -117,6 +117,9 @@ export function routeWith(ctx: Ctx, opts: RouteOptions, cwd = process.cwd()): vo
     mode: stage.mode,
     max_turns: stage.max_turns,
     branch,
+    // エージェントが読むコミット。apply を別 job で動かすとき、検証の基準として渡す。
+    head: needsBranch ? (tryGit(["rev-parse", "HEAD"], cwd) ?? "") : "",
+    base: base ?? "",
     agents: stage.agents.join(","),
     allowed_bots: allowedBots(ctx.project.bot_logins),
     // 読み取り工程が書き込めるのは結果ファイルの置き場所だけ(Edit のパス指定は Write にも効く)。Bash は渡さない。

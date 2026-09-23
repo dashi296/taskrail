@@ -73,6 +73,8 @@ common(program
   .description("エージェントの結果を検証し、コメント・PR/MR作成・列の移動を行う")
   .requiredOption("--issue <n>")
   .requiredOption("--stage <id>")
+  .option("--clean-workspace", "作業ツリーがエージェントの触っていない checkout であることを示す(apply を別 job で動かす場合)")
+  .option("--head <sha>", "エージェントが読んだコミット(別 job のときに route から渡す)")
   .option("--dry-run", "書き込まず、投稿するコメントを表示する")).action(apply);
 
 common(program

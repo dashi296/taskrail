@@ -20,6 +20,7 @@
 - `advance` は閉じた Issue と blocked の Issue を動かさない。判定中に状態が変わった場合も動かさない
 - `--local-checks` は渡す環境変数を許可リストに絞り(追加は `TASKRAIL_CHECK_ENV`)、HOME を使い捨てにし、ASKPASS を無効にする
 - `--local-checks` は checkout で実行される設定(`filter.*.smudge` / `.process`)があれば検査しない
+- apply をエージェントとは別の job で実行する。結果ファイルとコミット(git bundle)だけを受け渡し、取得したての環境で検査する
 - エージェントの認証は `ANTHROPIC_API_KEY` と `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`)のどちらでもよい
 - 修正: App が動かした列でエージェントが起動しない問題。route が `allowed_bots` を出力し、claude-code-action に渡す
 - 導入先に置くファイルを最小限にした。`init` は既定でリポジトリに何も置かない(ローカル実行専用)。`--ci` で自動実行の入口のワークフローを、`--docs` `--issue-template` `--config` で任意のファイルを置く
