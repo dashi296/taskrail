@@ -446,6 +446,20 @@ describe("シンボリックリンクによる保護パスの回避", () => {
     g("commit", "-qm", "改名");
     expect(protectedChanges("HEAD~1", globs, d)).toEqual(["CLAUDE.md"]);
   });
+  it("改名を混ぜても、その後ろのファイルを読み飛ばさない", () => {
+    const { d, g } = repo();
+    mkdirSync(join(d, "z"));
+    writeFileSync(join(d, "a.txt"), "1\n");
+    writeFileSync(join(d, "z", "CLAUDE.md"), "ルール\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    // 改名は1つの差分で2つのパスを持つため、読み方を誤ると以降の変更を見落とす。
+    g("mv", "a.txt", "c.txt");
+    writeFileSync(join(d, "z", "CLAUDE.md"), "書き換え\n");
+    g("add", "-A");
+    g("commit", "-qm", "改名とルールの変更");
+    expect(protectedChanges("HEAD~1", globs, d)).toContain("z/CLAUDE.md");
+  });
   it("保護対象でない通常の変更は通し、ディレクトリそのものも保護対象として扱う", () => {
     const { d, g } = repo();
     writeFileSync(join(d, "a"), "1\n");
