@@ -29,7 +29,7 @@ node dist/cli.js --help
 
 - **CLI の中で LLM を呼ばない。** CLI は決定的な処理だけを行う。
 - **エージェントに書き込みをさせない。** Issue・ラベル・PR への書き込みは `apply` と `board` に集約する。
-- **安全性に関わる変更にはテストを付ける。** 特に `core/result.ts`、`core/record.ts`、`core/flow.ts`、`core/prompt.ts`。
+- **安全性に関わる変更にはテストを付ける。** 強制しているのは `commands/apply.ts` と `commands/route.ts`、判断の材料は `core/result.ts`、`core/record.ts`、`core/flow.ts`、`core/prompt.ts`。
 - `flow/schemas/result.schema.json` と `src/core/result.ts` の zod スキーマは同期させる。
 - 依存パッケージを増やさない(現在: commander、yaml、zod)。
 - プロンプトを変えたら、過去の Issue 数件で再実行し、結果が悪化していないか確認する。

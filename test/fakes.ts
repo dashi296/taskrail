@@ -84,11 +84,17 @@ export class FakePlatform implements Platform {
     return [];
   }
   upsertLabel(): void {}
+  /** 作成された PR(検証用)。 */
+  createdPullRequests: { head: string; base: string; title: string; body: string }[] = [];
+  /** true なら PR の作成が失敗する(API の失敗を模す)。 */
+  failCreatePullRequest = false;
   findPullRequestByBranch(): PullRequest | null {
     return null;
   }
-  createPullRequest(): PullRequest {
-    throw new Error("not used");
+  createPullRequest(args: { head: string; base: string; title: string; body: string }): PullRequest {
+    if (this.failCreatePullRequest) throw new Error("gh pr create が失敗しました: HTTP 422");
+    this.createdPullRequests.push(args);
+    return { number: 100 + this.createdPullRequests.length, branch: args.head, url: `https://example.test/pull/${this.createdPullRequests.length}` };
   }
   listReviewFeedback(): string[] {
     return [];

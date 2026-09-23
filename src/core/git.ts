@@ -59,10 +59,10 @@ export function issueFromBranch(prefix: string, branch: string): number | null {
  * 導入先のファイルを増やさないよう .gitignore は変更せず、コミットされない .git/info/exclude に書く。
  * git worktree でも正しい場所に書けるよう、パスは git に尋ねる。
  */
-export function excludeTaskrailDir(): boolean {
-  const rel = tryGit(["rev-parse", "--git-path", "info/exclude"]);
+export function excludeTaskrailDir(cwd = process.cwd()): boolean {
+  const rel = tryGit(["rev-parse", "--git-path", "info/exclude"], cwd);
   if (!rel) return false;
-  const file = resolve(rel);
+  const file = resolve(cwd, rel);
   const line = ".taskrail/";
   const current = existsSync(file) ? readFileSync(file, "utf8") : "";
   if (current.split("\n").includes(line)) return true;
