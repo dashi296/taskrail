@@ -6,14 +6,30 @@ import { dirname, join, posix, resolve } from "node:path";
  * git を実行する。作業ツリーはエージェントが触った後のものなので、リポジトリに仕込まれた hook や fsmonitor が
  * taskrail の git 操作で実行されないよう、常に無効にする。
  */
-export function git(args: string[], cwd = process.cwd()): string {
-  return gitRaw(args, cwd).trim();
+export function git(args: string[], cwd = process.cwd(), env?: NodeJS.ProcessEnv): string {
+  return gitRaw(args, cwd, env).trim();
 }
 
 /** 出力を加工せずに返す(先頭の空白や NUL 区切りに意味がある出力用)。 */
-function gitRaw(args: string[], cwd: string): string {
+function gitRaw(args: string[], cwd: string, env?: NodeJS.ProcessEnv): string {
   const hardened = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args];
-  return execFileSync("git", hardened, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
+  return execFileSync("git", hardened, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
+}
+
+/**
+ * checkout のときに実行される filter(`filter.<name>.smudge` / `.process`)が仕込まれていないか。
+ * 仕込まれていると、checkout だけで任意のコマンドが動く。名前は任意なので、設定の有無で判断する。
+ */
+export function checkoutFilters(cwd = process.cwd()): string[] {
+  // --show-scope: リポジトリ側(local / worktree。include で読み込んだものも local)だけを対象にする。
+  // 利用者自身のグローバル設定(git-lfs など)は本人のものなので止めない。
+  const out = tryGit(["config", "--show-scope", "--includes", "--name-only", "--get-regexp", "^filter\\..*\\.(smudge|process)$"], cwd);
+  return (out ?? "")
+    .split("\n")
+    .map((l) => l.split("\t"))
+    .filter(([scope]) => scope === "local" || scope === "worktree")
+    .map(([, name]) => name ?? "")
+    .filter(Boolean);
 }
 
 export function tryGit(args: string[], cwd = process.cwd()): string | null {
@@ -167,32 +183,54 @@ export function pushCommit(sha: string, branch: string, expected: RemoteIdentity
 }
 
 /**
- * push 先が別のリポジトリへ向けられていないか確かめる。
- * - `url.<別リポジトリ>.pushInsteadOf` は push のときだけ効き、`ls-remote --get-url` には現れない。
- * - `--local` はリポジトリ直下の設定しか読まず、`include` / `includeIf` や worktree 固有の設定を見落とす。
- *   そのため、既定(有効な設定すべて)で読み、対象の URL に効く書き換えだけを違反とする。
- * - 最後に、実際に使う URL が期待するリポジトリを指しているかを確かめる(origin の URL 自体の差し替えを防ぐ)。
+ * apply が push / fetch に使うリモート。CI では TASKRAIL_GIT_REMOTE に URL を与える。
+ * claude-code-action は origin の URL をエージェント用の(読み取り専用の)トークン入りに書き換えるため、
+ * origin のままだと認証がそちらに負け、push が拒否される。URL を直接渡せば、認証は credential.helper から得る。
  */
+export function remote(env: NodeJS.ProcessEnv = process.env): string {
+  const url = env.TASKRAIL_GIT_REMOTE?.trim();
+  if (!url) return "origin";
+  if (!/^https:\/\/[^\s@/]+\/[^\s@]+$/.test(url)) throw new Error(`TASKRAIL_GIT_REMOTE が不正です(認証情報を含まない https の URL を指定してください): ${url}`);
+  return url;
+}
+
 /** push 先として認めるリポジトリ。host が空文字なら、ホストは問わずパスだけで照合する(ローカルのリポジトリ)。 */
 export interface RemoteIdentity {
   host: string;
   repo: string;
 }
 
+/**
+ * push 先が別のリポジトリへ向けられていないか確かめる。
+ * git は `remote.<name>.pushurl`(複数可)、`url.*.pushInsteadOf` の順に push 先を決める。
+ * `ls-remote --get-url` は pushInsteadOf を展開しないため、push と同じ解決結果を使う。
+ */
 function checkPushTarget(url: string, expected: RemoteIdentity, cwd: string): void {
+  for (const target of pushUrls(url, cwd)) {
+    if (!pointsAt(target, expected)) {
+      throw new Error(`push 先が ${expected.host ? `${expected.host}/` : ""}${expected.repo} ではありません: ${target}`);
+    }
+  }
+}
+
+/** 実際に push される URL(複数のことがある)。 */
+function pushUrls(url: string, cwd: string): string[] {
+  if (url === "origin") {
+    // git remote get-url --push --all は pushurl と pushInsteadOf を反映し、複数の push 先をすべて返す。
+    const all = git(["remote", "get-url", "--push", "--all", "origin"], cwd);
+    const urls = all.split("\n").filter((l) => l.trim());
+    if (!urls.length) throw new Error("origin の push 先が分かりません");
+    return urls;
+  }
+  // URL を直接指定する場合は、その URL に効く書き換えがないことを確かめる(指定した URL のまま push する)。
   for (const line of (tryGit(["config", "--includes", "--get-regexp", "^url\\..*\\.(push)?insteadof$"], cwd) ?? "").split("\n")) {
     const i = line.indexOf(" ");
     if (i < 0) continue;
     const prefix = line.slice(i + 1);
     const base = line.slice(4, line.lastIndexOf(".", line.lastIndexOf(".") - 1));
-    if (prefix && url.startsWith(prefix)) {
-      throw new Error(`push 先を書き換える設定があります(${prefix} → ${base})`);
-    }
+    if (prefix && url.startsWith(prefix)) throw new Error(`push 先を書き換える設定があります(${prefix} → ${base})`);
   }
-  const effective = url === "origin" ? (tryGit(["config", "--get", "remote.origin.pushurl"], cwd) ?? git(["ls-remote", "--get-url", "origin"], cwd)) : url;
-  if (!pointsAt(effective, expected)) {
-    throw new Error(`push 先が ${expected.host ? `${expected.host}/` : ""}${expected.repo} ではありません: ${effective}`);
-  }
+  return [url];
 }
 
 /**
@@ -206,28 +244,27 @@ export function pointsAt(url: string, expected: RemoteIdentity): boolean {
   return expected.host === "" || target.host.toLowerCase() === expected.host.toLowerCase();
 }
 
-/** URL からホストとリポジトリのパスを取り出す。https、ssh(scp 形式と URL 形式)、ローカルのパスに対応する。 */
+/**
+ * URL からホストとリポジトリのパスを取り出す。ホストにはポートも含める
+ * (期待値は GITHUB_SERVER_URL 由来で、非標準ポートなら "host:port" になるため)。
+ */
 function parseRemote(url: string): RemoteIdentity | null {
   const trimmed = url.trim();
   const clean = (path: string) => path.replace(/\.git$/, "").replace(/^\/+|\/+$/g, "");
-  const scheme = /^(?:https?|ssh|git|file):\/\/(?:[^@/]*@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(trimmed);
-  if (scheme) return { host: scheme[1]!, repo: clean(scheme[2]!) };
-  const scp = /^(?:[^@/]+@)([^/:]+):(.+)$/.exec(trimmed);
-  if (scp) return { host: scp[1]!, repo: clean(scp[2]!) };
+  // scheme://[user@]host[:port]/path。file:// はホストを省略でき、localhost はローカル扱い。
+  const scheme = /^(https?|ssh|git|file):\/\/(?:[^@/]*@)?([^/:]*(?::\d+)?)(\/.*)$/.exec(trimmed);
+  if (scheme) {
+    // 既定のポートは省略形と同じものとして扱う(期待値は host だけのことがある)。
+    const defaults: Record<string, string> = { https: "443", http: "80", ssh: "22", git: "9418" };
+    const host = scheme[2]!.replace(new RegExp(`:${defaults[scheme[1]!]}$`), "");
+    const local = host === "" || host.toLowerCase() === "localhost";
+    return { host: local ? "" : host, repo: clean(scheme[3]!) };
+  }
+  // scp 形式 host:path(user@ は任意)。絶対パスやスキームは上で処理済み。
+  const scp = /^(?:([^@/]+)@)?([^/:]+):(?!\/)(.+)$/.exec(trimmed);
+  if (scp) return { host: scp[2]!, repo: clean(scp[3]!) };
   if (/^[./]/.test(trimmed)) return { host: "", repo: clean(trimmed) };
   return null;
-}
-
-/**
- * apply が push / fetch に使うリモート。CI では TASKRAIL_GIT_REMOTE に URL を与える。
- * claude-code-action は origin の URL をエージェント用の(読み取り専用の)トークン入りに書き換えるため、
- * origin のままだと認証がそちらに負け、push が拒否される。URL を直接渡せば、認証は credential.helper から得る。
- */
-export function remote(env: NodeJS.ProcessEnv = process.env): string {
-  const url = env.TASKRAIL_GIT_REMOTE?.trim();
-  if (!url) return "origin";
-  if (!/^https:\/\/[^\s@/]+\/[^\s@]+$/.test(url)) throw new Error(`TASKRAIL_GIT_REMOTE が不正です(認証情報を含まない https の URL を指定してください): ${url}`);
-  return url;
 }
 
 /** 最小限の glob(`**`、`*`)。依存を増やさないための自前実装。 */
