@@ -184,8 +184,13 @@ export function advanceIssue(ctx: Ctx, opts: AdvanceOpts, expectedCi: string[]):
     if (!r.ok) return skip(`#${number}: ${r.why}。${opts.to} には進めません`);
     if (r.branch !== opts.branch) return skip(`#${number}: 実装の記録のブランチ(${r.branch})とイベントのブランチ(${opts.branch})が違います`);
   }
+  // 検査の問い合わせ中に閉じられた・blocked が付いた・列が動いた場合は、その古い状態で移さない。
+  const now = ctx.platform.getIssue(number);
+  if (now.state !== "open") return skip(`#${number}: 判定中に Issue が閉じられました`);
+  if (now.labels.includes(ctx.flow.blocked_label)) return skip(`#${number}: 判定中に ${ctx.flow.blocked_label} が付きました`);
+  if (currentStage(ctx.flow, now.labels)?.id !== stage.id) return skip(`#${number}: 判定中に列が動きました`);
   log(`#${number}: ${stage.id} → ${opts.to}`);
-  if (!opts.dryRun) moveTo(ctx, issue, opts.to);
+  if (!opts.dryRun) moveTo(ctx, now, opts.to);
   return true;
 }
 

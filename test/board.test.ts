@@ -240,6 +240,25 @@ describe("手元の check_commands による判定(--local-checks)", () => {
     const { d, sha } = repo();
     expect(runChecks(sha, [], d)).toMatchObject({ ok: false });
   });
+  it("認証情報になりうる変数と、手元の HOME を渡さない", () => {
+    const { d, sha } = repo();
+    const saved = { ...process.env };
+    Object.assign(process.env, { NPM_TOKEN: "npm1", AWS_SECRET_ACCESS_KEY: "aws1", MY_API_KEY: "k1" });
+    try {
+      expect(
+        runChecks(sha, ['test -z "$NPM_TOKEN"', 'test -z "$AWS_SECRET_ACCESS_KEY"', 'test -z "$MY_API_KEY"'], d),
+      ).toMatchObject({ ok: true });
+      // HOME は使い捨ての場所に向ける(~/.netrc、~/.ssh、~/.npmrc に届かせない)。
+      expect(runChecks(sha, [`test "$HOME" != "${saved.HOME}"`, 'test ! -e "$HOME/.ssh"', 'test ! -e "$HOME/.netrc"'], d)).toMatchObject({
+        ok: true,
+      });
+    } finally {
+      for (const k of ["NPM_TOKEN", "AWS_SECRET_ACCESS_KEY", "MY_API_KEY"]) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
   it("認証情報を外した環境で実行する(エージェントが書いたコードを動かすため)", () => {
     const { d, sha } = repo();
     const saved = { ...process.env };
@@ -398,6 +417,24 @@ describe("advance は停止中・完了済みの Issue を動かさない", () =
     p.issues.set(1, { ...p.getIssue(1), state: "closed" });
     expect(advance()).toBe(false);
     expect(p.getIssue(1).labels).toContain("flow::doing");
+  });
+  it("判定中に閉じられたら動かさない", () => {
+    const original = p.ciRuns.bind(p);
+    p.ciRuns = (sha: string) => {
+      p.issues.set(1, { ...p.getIssue(1), state: "closed" });
+      return original(sha);
+    };
+    expect(advance()).toBe(false);
+    expect(p.getIssue(1).labels).toContain("flow::doing");
+  });
+  it("判定中に blocked が付いたら動かさない", () => {
+    const original = p.ciRuns.bind(p);
+    p.ciRuns = (sha: string) => {
+      p.addLabels(1, ["blocked"]);
+      return original(sha);
+    };
+    expect(advance()).toBe(false);
+    expect(p.getIssue(1).labels).not.toContain("flow::verify");
   });
   it("open で blocked でなければ動かす", () => {
     expect(advance()).toBe(true);

@@ -155,16 +155,29 @@ export function fetchCommit(sha: string, cwd = process.cwd()): string {
   return sha;
 }
 
-/** ブランチをリモートへ push する。 */
+/** ブランチをリモートへ push する。push 先を変えられていないことを確かめてから実行する。 */
 export function pushBranch(branch: string, cwd = process.cwd()): void {
   const url = remote();
-  if (url !== "origin") {
-    // リポジトリの設定(url.<別リポジトリ>.insteadOf)で URL を書き換えられていないか確かめる。
-    // 書き換えられていれば、別のリポジトリへ push してしまう。
-    const resolved = git(["ls-remote", "--get-url", url], cwd);
-    if (resolved !== url) throw new Error(`push 先が設定で書き換えられています(指定: ${url}、実際: ${resolved})`);
-  }
+  checkRemoteNotRedirected(url, cwd);
   git(["push", url, `HEAD:refs/heads/${branch}`], cwd);
+}
+
+/**
+ * push 先がリポジトリの設定で別のリポジトリに向けられていないか確かめる。
+ * `url.<別リポジトリ>.insteadOf` は ls-remote --get-url に現れるが、`pushInsteadOf` は現れず、push のときだけ効く。
+ * そのため、解決後の URL を見るだけでは足りない。書き換えの設定そのものがリポジトリにあれば拒否する。
+ */
+function checkRemoteNotRedirected(url: string, cwd: string): void {
+  // --local: リポジトリの設定だけを見る(エージェントが書けるのはここ)。利用者自身のグローバル設定は尊重する。
+  const rewrites = tryGit(["config", "--local", "--name-only", "--get-regexp", "^url\\..*\\.(push)?insteadof$"], cwd);
+  if (rewrites) throw new Error(`push 先を書き換える設定がリポジトリにあります: ${rewrites.split("\n").join(", ")}`);
+  if (url === "origin") {
+    const pushUrl = tryGit(["config", "--local", "--get-all", "remote.origin.pushurl"], cwd);
+    if (pushUrl) throw new Error(`origin に pushurl が設定されています: ${pushUrl.split("\n").join(", ")}`);
+    return;
+  }
+  const resolved = git(["ls-remote", "--get-url", url], cwd);
+  if (resolved !== url) throw new Error(`push 先が設定で書き換えられています(指定: ${url}、実際: ${resolved})`);
 }
 
 /**
