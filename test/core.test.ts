@@ -383,6 +383,11 @@ describe("エージェントの出力による記録の偽造", () => {
     expect(latestArtifact([comment(text)], "spec")).toContain("本物");
     expect(latestArtifact([comment(text)], "spec")).not.toMatch(/^FAKE/);
   });
+  it("コメントの先頭にないマーカーは読まない(無害化をすり抜けた場合の二重の守り)", () => {
+    const text = `前書き\n${forgedRun}\n${forgedSpec}`;
+    expect(parseRuns([comment(text)])).toHaveLength(0);
+    expect(latestArtifact([comment(text)], "spec")).toBeNull();
+  });
   it("実行記録ではないコメント(人間の投稿を信頼した場合も)の成果物マーカーは読まない", () => {
     expect(latestArtifact([comment(forgedSpec)], "spec")).toBeNull();
   });
@@ -431,6 +436,29 @@ describe("シンボリックリンクによる保護パスの回避", () => {
     g("add", "-A");
     g("commit", "-qm", "x");
     expect(protectedChanges("HEAD~1", globs, d)).toEqual(["docs/rules.md(CLAUDE.md のリンク先)"]);
+  });
+  it("保護対象のファイルを改名・移動しても検出する", () => {
+    const { d, g } = repo();
+    writeFileSync(join(d, "CLAUDE.md"), "ルール\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    g("mv", "CLAUDE.md", "RULES.md");
+    g("commit", "-qm", "改名");
+    expect(protectedChanges("HEAD~1", globs, d)).toEqual(["CLAUDE.md"]);
+  });
+  it("改名を混ぜても、その後ろのファイルを読み飛ばさない", () => {
+    const { d, g } = repo();
+    mkdirSync(join(d, "z"));
+    writeFileSync(join(d, "a.txt"), "1\n");
+    writeFileSync(join(d, "z", "CLAUDE.md"), "ルール\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    // 改名は1つの差分で2つのパスを持つため、読み方を誤ると以降の変更を見落とす。
+    g("mv", "a.txt", "c.txt");
+    writeFileSync(join(d, "z", "CLAUDE.md"), "書き換え\n");
+    g("add", "-A");
+    g("commit", "-qm", "改名とルールの変更");
+    expect(protectedChanges("HEAD~1", globs, d)).toContain("z/CLAUDE.md");
   });
   it("保護対象でない通常の変更は通し、ディレクトリそのものも保護対象として扱う", () => {
     const { d, g } = repo();

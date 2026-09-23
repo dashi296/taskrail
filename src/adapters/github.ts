@@ -6,16 +6,21 @@ import type { ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platfo
  * 依存を増やさないため octokit は使わない。GitHub Actions のランナーには gh が入っている。
  * 認証は GH_TOKEN(または gh auth login 済みの状態)に任せる。
  */
+export type GhRunner = (args: string[], input?: string) => string;
+
 export class GitHub implements Platform {
   readonly name = "github" as const;
   private readonly repo: string;
+  /** gh の実行。テストでは差し替える。 */
+  private readonly run: GhRunner;
 
-  constructor(repo?: string) {
+  constructor(repo?: string, run: GhRunner = gh) {
+    this.run = run;
     this.repo = repo ?? process.env.GH_REPO ?? process.env.GITHUB_REPOSITORY ?? this.detectRepo();
   }
 
   private detectRepo(): string {
-    return gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
+    return this.run(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
   }
 
   private api(path: string, opts: { method?: string; body?: unknown; paginate?: boolean; jq?: string } = {}): string {
@@ -24,7 +29,7 @@ export class GitHub implements Platform {
     if (opts.paginate) args.push("--paginate");
     if (opts.jq) args.push("--jq", opts.jq);
     if (opts.body !== undefined) args.push("--input", "-");
-    return gh(args, opts.body !== undefined ? JSON.stringify(opts.body) : undefined);
+    return this.run(args, opts.body !== undefined ? JSON.stringify(opts.body) : undefined);
   }
 
   /** --paginate + --jq '.[]' は1行1オブジェクトで返る。 */
