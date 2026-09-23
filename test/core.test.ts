@@ -364,8 +364,19 @@ describe("強制する保護パス", () => {
     g("remote", "set-url", "origin", evil);
     expect(push).toThrow(/o\/r ではありません/);
     noRefs();
-    // 5. 正しい origin なら push できる(偽陽性がないことの確認)。
+    // 5. origin 指定のときも pushInsteadOf を検出する(get-url --push が書き換えを反映する)。
     g("remote", "set-url", "origin", origin);
+    g("config", `url.${evil}.pushInsteadOf`, origin);
+    expect(push).toThrow(/ではありません/);
+    noRefs();
+    // 6. pushurl が複数あるときは、すべてを確かめる(git はすべてに push する)。
+    g("config", "--unset", `url.${evil}.pushInsteadOf`);
+    g("config", "--add", "remote.origin.pushurl", origin);
+    g("config", "--add", "remote.origin.pushurl", evil);
+    expect(push).toThrow(/ではありません/);
+    noRefs();
+    // 7. 正しい origin なら push できる(偽陽性がないことの確認)。
+    g("config", "--unset-all", "remote.origin.pushurl");
     push();
     expect(execFileSync("git", ["ls-remote", origin], { encoding: "utf8" })).toContain("issue-1-x");
   });
@@ -385,6 +396,14 @@ describe("強制する保護パス", () => {
     expect(pointsAt("/tmp/x/o/r.git", { host: "", repo: "o/r" })).toBe(false);
     expect(pointsAt("/tmp/o/r.git", { host: "", repo: "tmp/o/r" })).toBe(true);
     expect(pointsAt("/tmp/o/r.git", { host: "", repo: "/tmp/o/r" })).toBe(true);
+    // GHES の非標準ポートは期待値にも現れる。既定のポートは省略形と同じものとして扱う。
+    expect(pointsAt("https://ghe.example:8443/o/r.git", { host: "ghe.example:8443", repo: "o/r" })).toBe(true);
+    expect(pointsAt("https://ghe.example:8443/o/r.git", { host: "ghe.example", repo: "o/r" })).toBe(false);
+    expect(pointsAt("https://github.com:443/o/r.git", { host: "github.com", repo: "o/r" })).toBe(true);
+    // file:// とホスト省略、scp 形式(user@ なし)も正しく読む。
+    expect(pointsAt("file:///tmp/o/r.git", { host: "", repo: "tmp/o/r" })).toBe(true);
+    expect(pointsAt("file://localhost/tmp/o/r.git", { host: "", repo: "tmp/o/r" })).toBe(true);
+    expect(pointsAt("host:o/r.git", { host: "host", repo: "o/r" })).toBe(true);
   });
   it("git が失敗したら例外にする(検査を素通りさせない)", () => {
     const d = mkdtempSync(join(tmpdir(), "taskrail-nogit-"));

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, tryGit } from "./git.js";
+import { checkoutFilters, git, tryGit } from "./git.js";
 
 /**
  * 記録されたコミットの内容だけを取り出した作業ツリーで、check_commands を順に実行する。
@@ -14,10 +14,14 @@ import { git, tryGit } from "./git.js";
  */
 export function runChecks(sha: string, commands: string[], cwd = process.cwd()): { ok: boolean; why: string } {
   if (!commands.length) return { ok: false, why: "check_commands が設定されていません" };
+  // checkout で走る filter が仕込まれていれば、作業ツリーを作るだけで任意のコマンドが動く。
+  const filters = checkoutFilters(cwd);
+  if (filters.length) return { ok: false, why: `checkout 時に実行される設定があります: ${filters.join(", ")}` };
   const dir = mkdtempSync(join(tmpdir(), "taskrail-checks-"));
   const worktree = join(dir, "w");
   try {
-    git(["worktree", "add", "--detach", "--quiet", worktree, sha], cwd);
+    // 作業ツリーを作る git 自体も、認証情報を渡さない環境で動かす(checkout が何かを実行する場合に備える)。
+    git(["worktree", "add", "--detach", "--quiet", worktree, sha], cwd, scrubbed(dir));
     for (const command of commands) {
       try {
         execFileSync("sh", ["-c", command], { cwd: worktree, stdio: "inherit", env: scrubbed(dir) });

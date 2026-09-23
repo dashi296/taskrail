@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -235,6 +235,36 @@ describe("手元の check_commands による判定(--local-checks)", () => {
     const { d, sha } = repo();
     expect(runChecks(sha, ["test -f a"], d)).toMatchObject({ ok: true });
     expect(runChecks(sha, ["test -f a", "test -f none"], d)).toMatchObject({ ok: false, why: "test -f none が失敗しました" });
+  });
+  it("checkout で実行される filter が仕込まれていたら検査しない", () => {
+    const { d, sha } = repo();
+    const g = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: d, encoding: "utf8" });
+    const leak = join(d, "leak");
+    writeFileSync(join(d, ".gitattributes"), "a filter=x\n");
+    g("add", "-A");
+    g("commit", "-qm", "filter");
+    g("config", "filter.x.smudge", `sh -c 'echo $GH_TOKEN > ${leak}; cat'`);
+    const head = g("rev-parse", "HEAD").trim();
+    const saved = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "s3cret";
+    try {
+      expect(runChecks(head, ["true"], d)).toMatchObject({ ok: false, why: expect.stringContaining("checkout 時に実行される設定") });
+      expect(existsSync(leak)).toBe(false);
+      // include で読み込んだ設定も対象にする。
+      g("config", "--unset", "filter.x.smudge");
+      const extra = join(d, "extra.cfg");
+      writeFileSync(extra, `[filter "x"]\n\tsmudge = sh -c 'echo $GH_TOKEN > ${leak}; cat'\n`);
+      g("config", "include.path", extra);
+      expect(runChecks(head, ["true"], d)).toMatchObject({ ok: false });
+      expect(existsSync(leak)).toBe(false);
+      // 利用者自身のグローバル設定(git-lfs など)は検査を止めない。
+      g("config", "--unset", "include.path");
+      expect(runChecks(head, ["true"], d)).toMatchObject({ ok: true });
+      void sha;
+    } finally {
+      if (saved === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = saved;
+    }
   });
   it("check_commands が空なら進めない", () => {
     const { d, sha } = repo();
