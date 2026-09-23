@@ -89,6 +89,46 @@ describe("apply の強制ルール", () => {
     });
   });
 
+  describe("検証工程(差分を読む読み取り工程)", () => {
+    const branch = () => branchName("issue-", 1, issueTitle);
+    const startVerify = () => {
+      p.removeLabel(1, "flow::spec");
+      p.addLabels(1, ["flow::verify"]);
+      r.git("checkout", "-q", "-B", branch());
+      writeFileSync(join(r.dir, "src.txt"), "実装\n");
+      r.git("add", "src.txt");
+      r.git("commit", "-qm", "実装");
+      r.git("push", "-q", "-u", "origin", branch());
+      p.heads.set(branch(), r.sha());
+      writeResult(r.dir, "verify-spec", result("verify-spec", { criteria: [{ text: "AC1", met: true, evidence: "テストが通っている" }] }));
+      writeResult(r.dir, "code-review", result("code-review"));
+    };
+    const run = () => applyWith(fakeCtx(p), { issue: "1", stage: "verify" }, r.dir);
+
+    it("ブランチの先頭を検証していれば合格にする", () => {
+      startVerify();
+      run();
+      expect(lastComment()).toContain('"status":"pass"');
+      expect(p.getIssue(1).labels).toContain("flow::review");
+    });
+    it("古いコミットを検証していたら違反にする(リモートに新しい push がある)", () => {
+      startVerify();
+      const old = r.sha();
+      writeFileSync(join(r.dir, "src.txt"), "実装2\n");
+      r.git("add", "src.txt");
+      r.git("commit", "-qm", "追加の実装");
+      r.git("push", "-q", "origin", branch());
+      p.heads.set(branch(), r.sha());
+      r.git("checkout", "-q", old); // 検証したのは古いコミット
+      writeResult(r.dir, "verify-spec", result("verify-spec", { criteria: [{ text: "AC1", met: true, evidence: "根拠" }] }));
+      writeResult(r.dir, "code-review", result("code-review"));
+      run();
+      expect(lastComment()).toContain("検証したコミット");
+      expect(lastComment()).toContain('"status":"error"');
+      expect(p.getIssue(1).labels).not.toContain("flow::review");
+    });
+  });
+
   describe("書き込み工程", () => {
     const branch = () => branchName("issue-", 1, issueTitle);
     const startWork = (files: Record<string, string>) => {

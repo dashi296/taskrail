@@ -157,7 +157,14 @@ export function fetchCommit(sha: string, cwd = process.cwd()): string {
 
 /** ブランチをリモートへ push する。 */
 export function pushBranch(branch: string, cwd = process.cwd()): void {
-  git(["push", remote(), `HEAD:refs/heads/${branch}`], cwd);
+  const url = remote();
+  if (url !== "origin") {
+    // リポジトリの設定(url.<別リポジトリ>.insteadOf)で URL を書き換えられていないか確かめる。
+    // 書き換えられていれば、別のリポジトリへ push してしまう。
+    const resolved = git(["ls-remote", "--get-url", url], cwd);
+    if (resolved !== url) throw new Error(`push 先が設定で書き換えられています(指定: ${url}、実際: ${resolved})`);
+  }
+  git(["push", url, `HEAD:refs/heads/${branch}`], cwd);
 }
 
 /**

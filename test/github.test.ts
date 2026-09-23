@@ -3,15 +3,15 @@ import { GitHub } from "../src/adapters/github.js";
 
 /** gh の代わり。args を記録し、path に応じた応答を返す。一致しなければ空。 */
 function fakeGh(routes: { match: RegExp; out?: string; error?: string }[]) {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
+  const calls: { args: string[]; input?: string }[] = [];
+  const run = (args: string[], input?: string): string => {
+    calls.push({ args, input });
     const path = args.join(" ");
     const hit = routes.find((r) => r.match.test(path));
     if (hit?.error) throw new Error(hit.error);
     return hit?.out ?? "";
   };
-  return { run, calls };
+  return { run, calls, args: (i = 0) => calls[i]!.args, body: (i = 0) => JSON.parse(calls[i]!.input!) as Record<string, unknown> };
 }
 
 const issueJson = JSON.stringify({
@@ -28,7 +28,7 @@ describe("GitHub アダプタ(gh の呼び出しと解釈)", () => {
   it("Issue を取得し、ラベルを名前の配列にする", () => {
     const { run, calls } = fakeGh([{ match: /issues\/7/, out: issueJson }]);
     const issue = new GitHub("o/r", run).getIssue(7);
-    expect(calls[0]).toEqual(["api", "repos/o/r/issues/7"]);
+    expect(calls[0]!.args).toEqual(["api", "repos/o/r/issues/7"]);
     expect(issue).toMatchObject({ number: 7, title: "ボタン", labels: ["flow::spec", "ai::ok"], state: "open" });
   });
 
@@ -39,12 +39,43 @@ describe("GitHub アダプタ(gh の呼び出しと解釈)", () => {
     ].join("\n");
     const { run, calls } = fakeGh([{ match: /issues\/7\/comments/, out: lines }]);
     const comments = new GitHub("o/r", run).listComments(7);
-    expect(calls[0]).toContain("--paginate");
-    expect(calls[0]).toContain(".[] | @json");
+    expect(calls[0]!.args).toContain("--paginate");
+    expect(calls[0]!.args).toContain(".[] | @json");
     expect(comments).toEqual([
       { id: 1, author: "a", body: "一件目", createdAt: "2026-01-01T00:00:00Z" },
       { id: 2, author: "", body: "", createdAt: "2026-01-02T00:00:00Z" },
     ]);
+  });
+
+  it("Issue の一覧はラベルで絞り込む(URL エンコードも含めて)", () => {
+    const { run, args } = fakeGh([{ match: /issues\?state=open/, out: "" }]);
+    new GitHub("o/r", run).listOpenIssuesByLabel("flow::ready");
+    expect(args()).toEqual([
+      "api",
+      "repos/o/r/issues?state=open&per_page=100&labels=flow%3A%3Aready",
+      "--paginate",
+      "--jq",
+      ".[] | @json",
+    ]);
+  });
+
+  it("書き込み系は本文を JSON で標準入力に渡す", () => {
+    const post = fakeGh([{ match: /comments/, out: "{}" }]);
+    new GitHub("o/r", post.run).addComment(7, "本文\n複数行");
+    expect(post.args().join(" ")).toContain("--method POST");
+    expect(post.body()).toEqual({ body: "本文\n複数行" });
+
+    const labels = fakeGh([{ match: /labels/, out: "{}" }]);
+    new GitHub("o/r", labels.run).addLabels(7, ["blocked", "flow::verify"]);
+    expect(labels.body()).toEqual({ labels: ["blocked", "flow::verify"] });
+
+    const empty = fakeGh([{ match: /labels/, out: "{}" }]);
+    new GitHub("o/r", empty.run).addLabels(7, []);
+    expect(empty.calls).toHaveLength(0);
+
+    const pr = fakeGh([{ match: /pulls/, out: JSON.stringify({ number: 1, html_url: "u", head: { ref: "b" } }) }]);
+    new GitHub("o/r", pr.run).createPullRequest({ head: "issue-1-x", base: "main", title: "題", body: "本文" });
+    expect(pr.body()).toEqual({ head: "issue-1-x", base: "main", title: "題", body: "本文" });
   });
 
   it("Issue の一覧から PR を除く", () => {
@@ -88,7 +119,7 @@ describe("GitHub アダプタ(gh の呼び出しと解釈)", () => {
     expect(new GitHub("o/r", run).ciRuns("a".repeat(40))).toEqual([
       { name: "CI", event: "pull_request", status: "completed", conclusion: "success", createdAt: "2026-01-01T00:00:00Z" },
     ]);
-    expect(calls[0]!.join(" ")).toContain(`actions/runs?head_sha=${"a".repeat(40)}`);
+    expect(calls[0]!.args.join(" ")).toContain(`actions/runs?head_sha=${"a".repeat(40)}`);
 
     const checks = fakeGh([
       { match: /check-runs/, out: JSON.stringify({ name: "test", status: "completed", conclusion: "success" }) },
@@ -127,7 +158,9 @@ describe("GitHub アダプタ(gh の呼び出しと解釈)", () => {
     ]);
     new GitHub("o/r", run).upsertLabel("flow::spec", "ededed", "説明");
     expect(calls).toHaveLength(2);
-    expect(calls[1]!.join(" ")).toContain("--method PATCH");
+    expect(calls[1]!.args.join(" ")).toContain("--method PATCH");
+    expect(JSON.parse(calls[0]!.input!)).toEqual({ name: "flow::spec", color: "ededed", description: "説明" });
+    expect(JSON.parse(calls[1]!.input!)).toEqual({ new_name: "flow::spec", color: "ededed", description: "説明" });
   });
 
   it("PR の作成と検索は、ブランチ名からオーナーつきの head で引く", () => {
@@ -138,11 +171,11 @@ describe("GitHub アダプタ(gh の呼び出しと解釈)", () => {
       url: "https://example.test/pull/12",
       branch: "issue-1-x",
     });
-    expect(calls[0]!.join(" ")).toContain("head=o%3Aissue-1-x");
+    expect(calls[0]!.args.join(" ")).toContain("head=o%3Aissue-1-x");
 
     const created = fakeGh([{ match: /pulls/, out: pr }]);
     expect(new GitHub("o/r", created.run).createPullRequest({ head: "issue-1-x", base: "main", title: "t", body: "b" }).number).toBe(12);
-    expect(created.calls[0]!.join(" ")).toContain("--method POST");
+    expect(created.calls[0]!.args.join(" ")).toContain("--method POST");
   });
 
   it("ラベルのイベントは labeled / unlabeled だけを時刻つきで返す", () => {

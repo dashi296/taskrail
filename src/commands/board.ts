@@ -25,6 +25,11 @@ export function dispatch(opts: CommonOpts): void {
   if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
   const ctx = loadCtx(opts);
   recheckImplemented(ctx, expectedCiWorkflows(), opts.dryRun, opts.localChecks);
+  dispatchWith(ctx, opts);
+}
+
+/** dispatch の着手判断。テストから Ctx を与えられるように分けてある。 */
+export function dispatchWith(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
   const doing = ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, "doing"));
   const verify = ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, "verify"));
   // 列を移した直後は API の一覧への反映が遅れ、同じ Issue が両方の列に出ることがあるため、番号で重複を除く。
@@ -158,6 +163,9 @@ export function advanceIssue(ctx: Ctx, opts: AdvanceOpts, expectedCi: string[]):
   const number = issueFromBranch(ctx.project.branch_prefix, opts.branch);
   if (!number) return skip(`taskrail のブランチではありません: ${opts.branch}`);
   const issue = ctx.platform.getIssue(number);
+  // 停止中・完了済みの Issue は、遅れて届いたイベントでも動かさない。
+  if (issue.state !== "open") return skip(`#${number}: Issue が閉じられています`);
+  if (issue.labels.includes(ctx.flow.blocked_label)) return skip(`#${number}: ${ctx.flow.blocked_label} のため動かしません`);
   const stage = currentStage(ctx.flow, issue.labels);
   if (!stage) return skip(`#${number}: flow ラベルが1つに定まりません`);
   if (opts.from && stage.id !== opts.from) return skip(`#${number}: 現在 ${stage.id} のため対象外(期待: ${opts.from})`);

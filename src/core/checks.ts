@@ -40,6 +40,9 @@ function scrubbed(dir: string): NodeJS.ProcessEnv {
     ...env,
     GH_CONFIG_DIR: join(dir, "gh"),
     GIT_TERMINAL_PROMPT: "0",
+    // 手元のグローバル設定(credential.helper=osxkeychain など)も読ませない。
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "credential.helper",
     GIT_CONFIG_VALUE_0: "",
