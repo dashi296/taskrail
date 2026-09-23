@@ -71,7 +71,14 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
       // コミットしてしまえば作業ツリーはきれいに見えるため、リモートにないコミットも検出する。
       const onBranch = stage.agents.some((a) => DIFF_AGENTS.has(a));
       const ref = onBranch ? resolveBranch(ctx.project.branch_prefix, issue.number, issue.title, cwd) : ctx.platform.defaultBranch();
-      if (commitCountSince(remoteSha(ref), cwd) > 0) return "読み取り専用の工程でコミットが作られました";
+      const sha = remoteSha(ref);
+      if (commitCountSince(sha, cwd) > 0) return "読み取り専用の工程でコミットが作られました";
+      // 差分を見る工程では、検証した内容がブランチの先頭と同じでなければならない。
+      // 古いコミットのままでも「リモートにないコミット」は 0 件になるため、一致そのものを確かめる。
+      if (onBranch) {
+        const head = git(["rev-parse", "HEAD"], cwd);
+        if (head !== sha) return `検証したコミット(${head.slice(0, 7)})が ${ref} の先頭(${sha.slice(0, 7)})と違います`;
+      }
       return null;
     });
   }

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { advanceIssue, checksPassed, missingCiRuns, recheckImplemented, resumeIssue } from "../src/commands/board.js";
+import { advanceIssue, checksPassed, dispatchWith, missingCiRuns, recheckImplemented, resumeIssue } from "../src/commands/board.js";
 import { staleReason } from "../src/commands/apply.js";
 import { nextStep } from "../src/commands/next.js";
 import { answersFor } from "../src/core/answers.js";
@@ -240,6 +240,34 @@ describe("手元の check_commands による判定(--local-checks)", () => {
     const { d, sha } = repo();
     expect(runChecks(sha, [], d)).toMatchObject({ ok: false });
   });
+  it("認証情報を外した環境で実行する(エージェントが書いたコードを動かすため)", () => {
+    const { d, sha } = repo();
+    const saved = { ...process.env };
+    Object.assign(process.env, {
+      GH_TOKEN: "t1",
+      GITHUB_TOKEN: "t2",
+      GH_ENTERPRISE_TOKEN: "t3",
+      SSH_AUTH_SOCK: "/tmp/agent.sock",
+      TASKRAIL_GIT_REMOTE: "https://github.com/o/r.git",
+    });
+    try {
+      const assertions = [
+        'test -z "$GH_TOKEN"',
+        'test -z "$GITHUB_TOKEN"',
+        'test -z "$GH_ENTERPRISE_TOKEN"',
+        'test -z "$SSH_AUTH_SOCK"',
+        'test -z "$TASKRAIL_GIT_REMOTE"',
+        'test -z "$(git config --get-all credential.helper)"',
+        'case "$GIT_SSH_COMMAND" in *IdentitiesOnly=yes*IdentityFile=/dev/null*) ;; *) exit 1;; esac',
+      ];
+      expect(runChecks(sha, assertions, d)).toMatchObject({ ok: true });
+    } finally {
+      for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "SSH_AUTH_SOCK", "TASKRAIL_GIT_REMOTE"]) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
   it("手元の作業ツリーの変更は判定に混ざらない(記録したコミットの内容で実行する)", () => {
     const { d, sha } = repo();
     writeFileSync(join(d, "b"), "2\n");
@@ -291,5 +319,88 @@ describe("resume --issue(ローカル実行)", () => {
     resumeIssue(fakeCtx(p), 1);
     expect(p.getIssue(1).labels).not.toContain("blocked");
     expect(p.getIssue(1).labels).toContain("flow::spec");
+  });
+});
+
+describe("dispatch の着手条件", () => {
+  const ready = (n: number, labels: string[], body = "") => {
+    p.addIssue(n, ["flow::ready", ...labels]);
+    p.issues.set(n, { ...p.getIssue(n), body });
+  };
+  let p: FakePlatform;
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    p = new FakePlatform();
+  });
+  const stage = (n: number) => p.getIssue(n).labels.find((l) => l.startsWith("flow::"));
+
+  it("ai::ok があり、blocked でなく、依存が閉じている Issue だけを、番号順に WIP の空きだけ着手する", () => {
+    p.addIssue(10, ["flow::doing"]); // WIP 1件
+    ready(5, ["ai::ok"]);
+    ready(6, ["ai::ok", "blocked"]);
+    ready(7, ["ai::no"]);
+    ready(8, ["ai::ok"], "Depends on #99");
+    p.addIssue(99, ["flow::doing"]); // 依存先が未完了
+    ready(9, ["ai::ok"]);
+    dispatchWith(fakeCtx(p, { wip_limit: 3 }));
+    // 空きは 3 - (doing 2件) = 1。番号の小さい #5 だけが着手される。
+    expect(stage(5)).toBe("flow::doing");
+    expect(stage(6)).toBe("flow::ready");
+    expect(stage(7)).toBe("flow::ready");
+    expect(stage(8)).toBe("flow::ready");
+    expect(stage(9)).toBe("flow::ready");
+  });
+
+  it("同じ Issue が doing と verify の両方に見えても、WIP は1件として数える", () => {
+    const issue = p.addIssue(10, ["flow::doing"]);
+    issue.labels.push("flow::verify"); // API の反映遅れを模す
+    ready(5, ["ai::ok"]);
+    dispatchWith(fakeCtx(p, { wip_limit: 2 }));
+    expect(stage(5)).toBe("flow::doing");
+  });
+
+  it("WIP が上限なら着手しない", () => {
+    p.addIssue(10, ["flow::doing"]);
+    p.addIssue(11, ["flow::verify"]);
+    ready(5, ["ai::ok"]);
+    dispatchWith(fakeCtx(p, { wip_limit: 2 }));
+    expect(stage(5)).toBe("flow::ready");
+  });
+
+  it("依存先が閉じていれば着手する", () => {
+    ready(5, ["ai::ok"], "依存: #99");
+    const dep = p.addIssue(99, []);
+    p.issues.set(99, { ...dep, state: "closed" });
+    dispatchWith(fakeCtx(p, { wip_limit: 2 }));
+    expect(stage(5)).toBe("flow::doing");
+  });
+});
+
+describe("advance は停止中・完了済みの Issue を動かさない", () => {
+  let p: FakePlatform;
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    p = new FakePlatform();
+    p.addIssue(1, ["flow::doing"]);
+    p.addComment(1, record("doing", "pass", { branch: "issue-1-x", sha: SHA }));
+    p.heads.set("issue-1-x", SHA);
+    p.checks.set(SHA, "success");
+    p.runs.set(SHA, [run("CI", "success")]);
+  });
+  const advance = () => advanceIssue(fakeCtx(p), { branch: "issue-1-x", from: "doing", to: "verify", requireChecks: true }, ["CI"]);
+
+  it("blocked なら動かさない", () => {
+    p.addLabels(1, ["blocked"]);
+    expect(advance()).toBe(false);
+    expect(p.getIssue(1).labels).toContain("flow::doing");
+  });
+  it("閉じた Issue なら動かさない", () => {
+    p.issues.set(1, { ...p.getIssue(1), state: "closed" });
+    expect(advance()).toBe(false);
+    expect(p.getIssue(1).labels).toContain("flow::doing");
+  });
+  it("open で blocked でなければ動かす", () => {
+    expect(advance()).toBe(true);
+    expect(p.getIssue(1).labels).toContain("flow::verify");
   });
 });

@@ -11,7 +11,7 @@ import { summarizeChecks } from "../src/adapters/github.js";
 import { ProjectSchema, protectedPaths } from "../src/core/config.js";
 import { trustedAuthors } from "../src/core/context.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
-import { branchName, changedFilesSince, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, protectedChanges, remote, slugify } from "../src/core/git.js";
+import { branchName, changedFilesSince, git, pushBranch, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, protectedChanges, remote, slugify } from "../src/core/git.js";
 import { buildPrompt, repoRules } from "../src/core/prompt.js";
 import { countRework, implementedBranch, latestArtifact, latestFailureFeedback, parseRuns, renderComment, type RunRecord } from "../src/core/record.js";
 import { combineStatus, readResult } from "../src/core/result.js";
@@ -304,9 +304,40 @@ describe("強制する保護パス", () => {
     g("commit", "-qm", "base");
     const pwned = join(d, "pwned");
     g("config", "core.fsmonitor", `touch ${pwned}; echo`);
+    // hook も実際に置く(hooksPath を無効にしていないと、push や commit のたびに走る)。
+    const hookPwned = join(d, "hook-pwned");
+    mkdirSync(join(d, ".git/hooks"), { recursive: true });
+    writeFileSync(join(d, ".git/hooks/pre-commit"), `#!/bin/sh\ntouch ${hookPwned}\n`, { mode: 0o755 });
+    writeFileSync(join(d, ".git/hooks/post-checkout"), `#!/bin/sh\ntouch ${hookPwned}\n`, { mode: 0o755 });
     writeFileSync(join(d, "a"), "2\n");
     expect(dirtyFiles(d)).toEqual(["a"]);
+    git(["checkout", "--", "a"], d);
     expect(existsSync(pwned)).toBe(false);
+    expect(existsSync(hookPwned)).toBe(false);
+  });
+  it("push 先の URL がリポジトリの設定で書き換えられていたら push しない", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskrail-insteadof-"));
+    const origin = join(dir, "origin.git");
+    const evil = join(dir, "evil.git");
+    const work = join(dir, "work");
+    for (const p of [origin, evil]) execFileSync("git", ["init", "-q", "--bare", "-b", "main", p]);
+    execFileSync("git", ["clone", "-q", origin, work]);
+    const g = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: work });
+    writeFileSync(join(work, "a"), "1\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    // エージェントはリポジトリローカルの設定を書ける。明示した URL を別のリポジトリへ向け替える。
+    g("config", `url.${evil}.insteadOf`, "https://github.com/o/r.git");
+    const env = { ...process.env, TASKRAIL_GIT_REMOTE: "https://github.com/o/r.git" };
+    const saved = process.env.TASKRAIL_GIT_REMOTE;
+    process.env.TASKRAIL_GIT_REMOTE = env.TASKRAIL_GIT_REMOTE;
+    try {
+      expect(() => pushBranch("issue-1-x", work)).toThrow(/書き換え/);
+    } finally {
+      if (saved === undefined) delete process.env.TASKRAIL_GIT_REMOTE;
+      else process.env.TASKRAIL_GIT_REMOTE = saved;
+    }
+    expect(execFileSync("git", ["ls-remote", evil], { encoding: "utf8" })).toBe("");
   });
   it("git が失敗したら例外にする(検査を素通りさせない)", () => {
     const d = mkdtempSync(join(tmpdir(), "taskrail-nogit-"));
