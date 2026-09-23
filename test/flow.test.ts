@@ -71,6 +71,11 @@ describe("decide", () => {
     const d = decide(project, { ...base, stage: getStage(flow, "verify"), status: "fail", reworkCount: 2 });
     expect(d).toMatchObject({ to: null, addBlocked: true });
   });
+  it("差し戻し先のない工程(spec / doing)の fail は、列を動かさず blocked にする", () => {
+    for (const id of ["inbox", "spec", "plan", "doing"]) {
+      expect(decide(project, { ...base, stage: getStage(flow, id), status: "fail" })).toMatchObject({ to: null, addBlocked: true });
+    }
+  });
   it("blocked は列を動かさず blocked ラベルを付ける", () => {
     const d = decide(project, { ...base, stage: getStage(flow, "doing"), status: "blocked" });
     expect(d).toMatchObject({ to: null, addBlocked: true });
