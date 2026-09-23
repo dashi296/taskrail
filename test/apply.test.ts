@@ -111,6 +111,21 @@ describe("apply の強制ルール", () => {
       expect(lastComment()).toContain('"status":"pass"');
       expect(p.getIssue(1).labels).toContain("flow::review");
     });
+    it("検証中にブランチが更新されたら違反にする", () => {
+      startVerify();
+      const verifiedSha = r.sha();
+      let asked = 0;
+      const heads = p.heads;
+      p.branchHead = (b: string) => {
+        asked++;
+        // 1回目(検査)は検証したコミット、2回目(書き込み直前の再確認)は新しいコミットを返す。
+        return asked === 1 ? (heads.get(b) ?? null) : "e".repeat(40);
+      };
+      run();
+      expect(verifiedSha).toBe(heads.get(branch()));
+      expect(lastComment()).toContain("検証中に");
+      expect(p.getIssue(1).labels).not.toContain("flow::review");
+    });
     it("古いコミットを検証していたら違反にする(リモートに新しい push がある)", () => {
       startVerify();
       const old = r.sha();

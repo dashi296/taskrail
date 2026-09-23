@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, tryGit } from "./git.js";
@@ -32,20 +32,34 @@ export function runChecks(sha: string, commands: string[], cwd = process.cwd()):
   }
 }
 
-/** 認証情報を外した環境。gh・git・ssh のいずれの認証も使えないようにする。 */
+/**
+ * 検査を動かす環境。認証情報になりうる変数を落とし、HOME を使い捨ての場所に向ける。
+ * これは sandbox ではない。防げるのは「手元の認証情報をそのまま渡すこと」までで、
+ * 任意のコードが利用者の権限で動くことは変わらない(docs/security.md の残りのリスクを参照)。
+ */
 function scrubbed(dir: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "SSH_AUTH_SOCK", "TASKRAIL_GIT_REMOTE"]) delete env[key];
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (SECRETISH.test(key)) continue;
+    env[key] = value;
+  }
   return {
     ...env,
-    GH_CONFIG_DIR: join(dir, "gh"),
+    // ~/.netrc、~/.ssh、~/.npmrc、クラウドの認証情報ファイルなどに届かせない。
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    GH_CONFIG_DIR: join(home, "gh"),
     GIT_TERMINAL_PROMPT: "0",
-    // 手元のグローバル設定(credential.helper=osxkeychain など)も読ませない。
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "credential.helper",
     GIT_CONFIG_VALUE_0: "",
-    GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=/dev/null",
+    GIT_SSH_COMMAND: "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=/dev/null",
   };
 }
+
+/** 認証情報になりうる環境変数(名前で判断する)。 */
+const SECRETISH = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|APIKEY|API_KEY|AUTH|SSH_AUTH_SOCK|NETRC|TASKRAIL_GIT_REMOTE/i;

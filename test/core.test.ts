@@ -327,16 +327,28 @@ describe("強制する保護パス", () => {
     g("add", "-A");
     g("commit", "-qm", "base");
     // エージェントはリポジトリローカルの設定を書ける。明示した URL を別のリポジトリへ向け替える。
+    g("config", `url.${evil}.pushInsteadOf`, "https://github.com/o/r.git");
+    const withRemote = (url: string, fn: () => void) => {
+      const saved = process.env.TASKRAIL_GIT_REMOTE;
+      process.env.TASKRAIL_GIT_REMOTE = url;
+      try {
+        fn();
+      } finally {
+        if (saved === undefined) delete process.env.TASKRAIL_GIT_REMOTE;
+        else process.env.TASKRAIL_GIT_REMOTE = saved;
+      }
+    };
+    // pushInsteadOf は push のときだけ効き、ls-remote --get-url には現れない。
+    withRemote("https://github.com/o/r.git", () => expect(() => pushBranch("issue-1-x", work)).toThrow(/書き換え/));
+    expect(execFileSync("git", ["ls-remote", evil], { encoding: "utf8" })).toBe("");
+    // insteadOf(push 以外にも効くもの)でも拒否する。
+    g("config", "--unset", `url.${evil}.pushInsteadOf`);
     g("config", `url.${evil}.insteadOf`, "https://github.com/o/r.git");
-    const env = { ...process.env, TASKRAIL_GIT_REMOTE: "https://github.com/o/r.git" };
-    const saved = process.env.TASKRAIL_GIT_REMOTE;
-    process.env.TASKRAIL_GIT_REMOTE = env.TASKRAIL_GIT_REMOTE;
-    try {
-      expect(() => pushBranch("issue-1-x", work)).toThrow(/書き換え/);
-    } finally {
-      if (saved === undefined) delete process.env.TASKRAIL_GIT_REMOTE;
-      else process.env.TASKRAIL_GIT_REMOTE = saved;
-    }
+    withRemote("https://github.com/o/r.git", () => expect(() => pushBranch("issue-1-x", work)).toThrow(/書き換え/));
+    // origin の pushurl も拒否する(ローカル実行では push 先が origin)。
+    g("config", "--unset", `url.${evil}.insteadOf`);
+    g("config", "remote.origin.pushurl", evil);
+    expect(() => pushBranch("issue-1-x", work)).toThrow(/pushurl/);
     expect(execFileSync("git", ["ls-remote", evil], { encoding: "utf8" })).toBe("");
   });
   it("git が失敗したら例外にする(検査を素通りさせない)", () => {

@@ -49,6 +49,8 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
   // 2. 強制ルール。エージェントがルールを忘れていても、ここで止める。
   let violation: string | null = errors[0] ?? null;
   let prUrl: string | undefined;
+  /** 差分を読む工程で、実際に検証したブランチとコミット。 */
+  let verified: { ref: string; sha: string } | null = null;
   const status = results.length ? combineStatus(results.map((r) => r.status)) : "fail";
 
   // 比較の基準は API で得たリモートの SHA。git の失敗は違反として扱う(検査を素通りさせない)。
@@ -78,7 +80,19 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
       if (onBranch) {
         const head = git(["rev-parse", "HEAD"], cwd);
         if (head !== sha) return `検証したコミット(${head.slice(0, 7)})が ${ref} の先頭(${sha.slice(0, 7)})と違います`;
+        verified = { ref, sha };
       }
+      return null;
+    });
+  }
+  if (!violation) {
+    // 検証してからここまでの間に push されていれば、その結果は古い。
+    violation = check(() => {
+      // 代入は上の check の中で行われるため、型の絞り込みには現れない。
+      const v = verified as { ref: string; sha: string } | null;
+      if (!v) return null;
+      const now = ctx.platform.branchHead(v.ref);
+      if (now !== v.sha) return `検証中に ${v.ref} が更新されました(${v.sha.slice(0, 7)} → ${String(now).slice(0, 7)})`;
       return null;
     });
   }
