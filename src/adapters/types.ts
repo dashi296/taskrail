@@ -48,6 +48,8 @@ export interface CiRun {
  */
 export interface Platform {
   readonly name: "github" | "gitlab";
+  /** push 先として認める先(GitHub なら host="github.com"、repo="owner/name")。 */
+  remoteIdentity(): { host: string; repo: string };
   getIssue(n: number): Issue;
   listComments(n: number): Comment[];
   addComment(n: number, body: string): void;

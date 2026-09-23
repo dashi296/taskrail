@@ -16,9 +16,9 @@
 - apply と route の強制ルールにテストを付けた(行カバレッジ: apply 7% → 95%、route 5% → 86%)
 - GitHub アダプタの gh 呼び出しにテストを付けた(20% → 86%)
 - 検証工程で、検証したコミットがブランチの先頭と一致することを確かめる(書き込み直前にもう一度確認する)
-- push 先を書き換える設定(`url.*.insteadOf` / `pushInsteadOf` / `remote.origin.pushurl`)があれば push しない
+- push 先の検査は有効な設定すべて(`include`、worktree 固有を含む)を見て、URL が対象リポジトリを指すことも確かめる。push は検査した SHA だけを送る
 - `advance` は閉じた Issue と blocked の Issue を動かさない。判定中に状態が変わった場合も動かさない
-- `--local-checks` は認証情報になりうる環境変数を落とし、HOME を使い捨ての場所に向ける
+- `--local-checks` は渡す環境変数を許可リストに絞り(追加は `TASKRAIL_CHECK_ENV`)、HOME を使い捨てにし、ASKPASS を無効にする
 - エージェントの認証は `ANTHROPIC_API_KEY` と `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`)のどちらでもよい
 - 修正: App が動かした列でエージェントが起動しない問題。route が `allowed_bots` を出力し、claude-code-action に渡す
 - 導入先に置くファイルを最小限にした。`init` は既定でリポジトリに何も置かない(ローカル実行専用)。`--ci` で自動実行の入口のワークフローを、`--docs` `--issue-template` `--config` で任意のファイルを置く

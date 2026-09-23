@@ -11,7 +11,7 @@ import { summarizeChecks } from "../src/adapters/github.js";
 import { ProjectSchema, protectedPaths } from "../src/core/config.js";
 import { trustedAuthors } from "../src/core/context.js";
 import { dwellFromEvents } from "../src/commands/metrics.js";
-import { branchName, changedFilesSince, git, pushBranch, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, protectedChanges, remote, slugify } from "../src/core/git.js";
+import { branchName, changedFilesSince, git, pushCommit, dirtyFiles, fetchCommit, globToRegExp, issueFromBranch, matchProtected, pointsAt, protectedChanges, remote, slugify } from "../src/core/git.js";
 import { buildPrompt, repoRules } from "../src/core/prompt.js";
 import { countRework, implementedBranch, latestArtifact, latestFailureFeedback, parseRuns, renderComment, type RunRecord } from "../src/core/record.js";
 import { combineStatus, readResult } from "../src/core/result.js";
@@ -315,19 +315,21 @@ describe("強制する保護パス", () => {
     expect(existsSync(pwned)).toBe(false);
     expect(existsSync(hookPwned)).toBe(false);
   });
-  it("push 先の URL がリポジトリの設定で書き換えられていたら push しない", () => {
-    const dir = mkdtempSync(join(tmpdir(), "taskrail-insteadof-"));
-    const origin = join(dir, "origin.git");
+  it("push 先を別のリポジトリへ向ける設定があれば push しない", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskrail-push-"));
+    const origin = join(dir, "o", "r.git"); // 期待するリポジトリ(o/r)
     const evil = join(dir, "evil.git");
     const work = join(dir, "work");
+    mkdirSync(join(dir, "o"), { recursive: true });
     for (const p of [origin, evil]) execFileSync("git", ["init", "-q", "--bare", "-b", "main", p]);
     execFileSync("git", ["clone", "-q", origin, work]);
     const g = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: work });
     writeFileSync(join(work, "a"), "1\n");
     g("add", "-A");
     g("commit", "-qm", "base");
-    // エージェントはリポジトリローカルの設定を書ける。明示した URL を別のリポジトリへ向け替える。
-    g("config", `url.${evil}.pushInsteadOf`, "https://github.com/o/r.git");
+    const head = () => execFileSync("git", ["rev-parse", "HEAD"], { cwd: work, encoding: "utf8" }).trim();
+    const identity = { host: "", repo: origin.replace(/^\/+/, "").replace(/\.git$/, "") };
+    const push = () => pushCommit(head(), "issue-1-x", identity, work);
     const withRemote = (url: string, fn: () => void) => {
       const saved = process.env.TASKRAIL_GIT_REMOTE;
       process.env.TASKRAIL_GIT_REMOTE = url;
@@ -338,18 +340,51 @@ describe("強制する保護パス", () => {
         else process.env.TASKRAIL_GIT_REMOTE = saved;
       }
     };
-    // pushInsteadOf は push のときだけ効き、ls-remote --get-url には現れない。
-    withRemote("https://github.com/o/r.git", () => expect(() => pushBranch("issue-1-x", work)).toThrow(/書き換え/));
-    expect(execFileSync("git", ["ls-remote", evil], { encoding: "utf8" })).toBe("");
-    // insteadOf(push 以外にも効くもの)でも拒否する。
+    const noRefs = () => expect(execFileSync("git", ["ls-remote", evil], { encoding: "utf8" })).toBe("");
+
+    // 1. pushInsteadOf は push のときだけ効き、ls-remote --get-url には現れない。
+    g("config", `url.${evil}.pushInsteadOf`, "https://github.com/o/r.git");
+    withRemote("https://github.com/o/r.git", () => expect(push).toThrow(/書き換え/));
+    noRefs();
+    // 2. include で読み込まれる別ファイルに置いても検出する(--local では見えない)。
     g("config", "--unset", `url.${evil}.pushInsteadOf`);
-    g("config", `url.${evil}.insteadOf`, "https://github.com/o/r.git");
-    withRemote("https://github.com/o/r.git", () => expect(() => pushBranch("issue-1-x", work)).toThrow(/書き換え/));
-    // origin の pushurl も拒否する(ローカル実行では push 先が origin)。
-    g("config", "--unset", `url.${evil}.insteadOf`);
-    g("config", "remote.origin.pushurl", evil);
-    expect(() => pushBranch("issue-1-x", work)).toThrow(/pushurl/);
-    expect(execFileSync("git", ["ls-remote", evil], { encoding: "utf8" })).toBe("");
+    const extra = join(dir, "extra.cfg");
+    writeFileSync(extra, `[url "${evil}"]\n\tpushInsteadOf = https://github.com/o/r.git\n`);
+    g("config", "include.path", extra);
+    withRemote("https://github.com/o/r.git", () => expect(push).toThrow(/書き換え/));
+    noRefs();
+    // 3. worktree 固有の設定に置いても検出する。
+    g("config", "--unset", "include.path");
+    g("config", "extensions.worktreeConfig", "true");
+    g("config", "--worktree", "remote.origin.pushurl", evil);
+    expect(push).toThrow(/o\/r ではありません/);
+    noRefs();
+    // 4. origin の URL 自体を差し替えても検出する。
+    g("config", "--worktree", "--unset", "remote.origin.pushurl");
+    g("remote", "set-url", "origin", evil);
+    expect(push).toThrow(/o\/r ではありません/);
+    noRefs();
+    // 5. 正しい origin なら push できる(偽陽性がないことの確認)。
+    g("remote", "set-url", "origin", origin);
+    push();
+    expect(execFileSync("git", ["ls-remote", origin], { encoding: "utf8" })).toContain("issue-1-x");
+  });
+  it("push 先の URL は、ホストとパスを分けて完全一致で照合する", () => {
+    const expected = { host: "github.com", repo: "o/r" };
+    expect(pointsAt("https://github.com/o/r.git", expected)).toBe(true);
+    expect(pointsAt("https://github.com/o/r", expected)).toBe(true);
+    expect(pointsAt("git@github.com:o/r.git", expected)).toBe(true);
+    expect(pointsAt("ssh://git@github.com:22/o/r.git", expected)).toBe(true);
+    // 末尾だけ一致する URL を通さない。
+    expect(pointsAt("https://evil.example/x/o/r.git", expected)).toBe(false);
+    expect(pointsAt("https://evil.example/o/r.git", expected)).toBe(false);
+    expect(pointsAt("https://github.com.evil.example/o/r.git", expected)).toBe(false);
+    expect(pointsAt("https://github.com/o/r-evil.git", expected)).toBe(false);
+    expect(pointsAt("https://github.com/other/r.git", expected)).toBe(false);
+    // ホストを問わない指定(ローカルのリポジトリ)では、パスだけで照合する。
+    expect(pointsAt("/tmp/x/o/r.git", { host: "", repo: "o/r" })).toBe(false);
+    expect(pointsAt("/tmp/o/r.git", { host: "", repo: "tmp/o/r" })).toBe(true);
+    expect(pointsAt("/tmp/o/r.git", { host: "", repo: "/tmp/o/r" })).toBe(true);
   });
   it("git が失敗したら例外にする(検査を素通りさせない)", () => {
     const d = mkdtempSync(join(tmpdir(), "taskrail-nogit-"));

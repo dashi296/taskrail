@@ -29,6 +29,12 @@ export class FakePlatform implements Platform {
     return issue;
   }
 
+  /** push 先として認める先。テストの origin はローカルのパスなので、テストから差し替える。 */
+  remoteId: { host: string; repo: string } = { host: "", repo: "o/r" };
+  remoteIdentity(): { host: string; repo: string } {
+    return this.remoteId;
+  }
+
   getIssue(n: number): Issue {
     const i = this.issues.get(n);
     if (!i) throw new Error(`no issue ${n}`);

@@ -8,10 +8,12 @@ import { branchName } from "../src/core/git.js";
 import { FakePlatform, fakeCtx } from "./fakes.js";
 
 /** origin(bare)と作業ツリーを持つリポジトリ。apply は API の SHA を基準にするため、実物の remote が要る。 */
-function repo(): { dir: string; git: (...args: string[]) => string; sha: () => string } {
+function repo(): { dir: string; origin: string; git: (...args: string[]) => string; sha: () => string } {
   const dir = mkdtempSync(join(tmpdir(), "taskrail-apply-"));
-  const origin = join(dir, "origin.git");
+  // origin は FakePlatform.repoPath() と揃える(push 先の確認が通るように)。
+  const origin = join(dir, "o", "r.git");
   const work = join(dir, "work");
+  mkdirSync(join(dir, "o"), { recursive: true });
   execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
   execFileSync("git", ["clone", "-q", origin, work]);
   const git = (...args: string[]) =>
@@ -20,7 +22,7 @@ function repo(): { dir: string; git: (...args: string[]) => string; sha: () => s
   git("add", "-A");
   git("commit", "-qm", "base");
   git("push", "-q", "-u", "origin", "main");
-  return { dir: work, git, sha: () => git("rev-parse", "HEAD") };
+  return { dir: work, origin, git, sha: () => git("rev-parse", "HEAD") };
 }
 
 const result = (agent: string, extra: Record<string, unknown> = {}) => ({
@@ -50,6 +52,8 @@ describe("apply の強制ルール", () => {
     issue.title = issueTitle;
     p.issues.set(1, { ...p.getIssue(1), title: issueTitle });
     p.heads.set("main", r.sha());
+    // origin はローカルのパスなので、push 先の照合はそのパスで行う。
+    p.remoteId = { host: "", repo: r.origin.replace(/^\/+/, "").replace(/\.git$/, "") };
   });
 
   describe("読み取り工程", () => {
@@ -118,7 +122,7 @@ describe("apply の強制ルール", () => {
       const heads = p.heads;
       p.branchHead = (b: string) => {
         asked++;
-        // 1回目(検査)は検証したコミット、2回目(書き込み直前の再確認)は新しいコミットを返す。
+        // 1回目(検査)は検証したコミット、2回目以降(記録を書く前の再確認)は新しいコミットを返す。
         return asked === 1 ? (heads.get(b) ?? null) : "e".repeat(40);
       };
       run();
@@ -171,6 +175,30 @@ describe("apply の強制ルール", () => {
       expect(lastComment()).toContain(`"branch":"${branch()}"`);
       expect(lastComment()).toContain(`"sha":"${r.sha()}"`);
       expect(execFileSync("git", ["ls-remote", "origin", branch()], { cwd: r.dir, encoding: "utf8" })).toContain(branch());
+    });
+    it("検査した後に HEAD が進んでも、検査したコミットだけを push する", () => {
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      const checkedSha = r.sha();
+      // 検査と push の間に、別のプロセスが保護対象を変更したコミットを積む状況を模す。
+      const original = p.getIssue.bind(p);
+      let calls = 0;
+      p.getIssue = (n: number) => {
+        if (++calls === 2) {
+          mkdirSync(join(r.dir, ".github/workflows"), { recursive: true });
+          writeFileSync(join(r.dir, ".github/workflows/ci.yml"), "on: push\n");
+          r.git("add", ".github");
+          r.git("commit", "-qm", "あとから足した");
+        }
+        return original(n);
+      };
+      run();
+      expect(p.createdPullRequests).toHaveLength(1);
+      expect(lastComment()).toContain(`"sha":"${checkedSha}"`);
+      // リモートに渡ったのは検査したコミットだけ。
+      const remote = execFileSync("git", ["ls-remote", "origin", branch()], { cwd: r.dir, encoding: "utf8" });
+      expect(remote).toContain(checkedSha);
+      expect(remote).not.toContain(r.sha());
     });
     it("保護対象のファイルを変更していたら push しない", () => {
       startWork({ ".github/workflows/ci.yml": "on: push\n" });

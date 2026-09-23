@@ -240,20 +240,48 @@ describe("手元の check_commands による判定(--local-checks)", () => {
     const { d, sha } = repo();
     expect(runChecks(sha, [], d)).toMatchObject({ ok: false });
   });
-  it("認証情報になりうる変数と、手元の HOME を渡さない", () => {
+  it("許可した変数だけを渡す(名前で拾えない認証経路も落とす)", () => {
     const { d, sha } = repo();
     const saved = { ...process.env };
-    Object.assign(process.env, { NPM_TOKEN: "npm1", AWS_SECRET_ACCESS_KEY: "aws1", MY_API_KEY: "k1" });
+    const extra = {
+      NPM_TOKEN: "npm1",
+      AWS_SECRET_ACCESS_KEY: "aws1",
+      MY_API_KEY: "k1",
+      // 名前に TOKEN も KEY も含まないが、認証に使える経路。
+      GIT_ASKPASS: "/tmp/askpass.sh",
+      SSH_ASKPASS: "/tmp/askpass.sh",
+      PGPASSFILE: "/tmp/pgpass",
+      NPM_CONFIG_USERCONFIG: "/tmp/npmrc",
+      HTTPS_PROXY: "https://user:password@proxy.example",
+      DOCKER_CONFIG: "/tmp/docker",
+    };
+    Object.assign(process.env, extra);
     try {
-      expect(
-        runChecks(sha, ['test -z "$NPM_TOKEN"', 'test -z "$AWS_SECRET_ACCESS_KEY"', 'test -z "$MY_API_KEY"'], d),
-      ).toMatchObject({ ok: true });
+      const names = Object.keys(extra).filter((k) => k !== "GIT_ASKPASS" && k !== "SSH_ASKPASS");
+      expect(runChecks(sha, names.map((n) => `test -z "$${n}"`), d)).toMatchObject({ ok: true });
+      // 認証を尋ねる経路は、値を引き継がず無効化する。
+      expect(runChecks(sha, ['test "$GIT_ASKPASS" = /bin/false', 'test "$SSH_ASKPASS" = /bin/false'], d)).toMatchObject({ ok: true });
       // HOME は使い捨ての場所に向ける(~/.netrc、~/.ssh、~/.npmrc に届かせない)。
       expect(runChecks(sha, [`test "$HOME" != "${saved.HOME}"`, 'test ! -e "$HOME/.ssh"', 'test ! -e "$HOME/.netrc"'], d)).toMatchObject({
         ok: true,
       });
+      // PATH は渡す(渡さないとコマンドが見つからない)。
+      expect(runChecks(sha, ['test -n "$PATH"'], d)).toMatchObject({ ok: true });
     } finally {
-      for (const k of ["NPM_TOKEN", "AWS_SECRET_ACCESS_KEY", "MY_API_KEY"]) {
+      for (const k of Object.keys(extra)) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+  it("TASKRAIL_CHECK_ENV に挙げた変数は渡す", () => {
+    const { d, sha } = repo();
+    const saved = { ...process.env };
+    Object.assign(process.env, { MY_REGISTRY: "https://registry.example", TASKRAIL_CHECK_ENV: "MY_REGISTRY" });
+    try {
+      expect(runChecks(sha, ['test "$MY_REGISTRY" = https://registry.example'], d)).toMatchObject({ ok: true });
+    } finally {
+      for (const k of ["MY_REGISTRY", "TASKRAIL_CHECK_ENV"]) {
         if (saved[k] === undefined) delete process.env[k];
         else process.env[k] = saved[k];
       }

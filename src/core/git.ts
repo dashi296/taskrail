@@ -155,29 +155,67 @@ export function fetchCommit(sha: string, cwd = process.cwd()): string {
   return sha;
 }
 
-/** ブランチをリモートへ push する。push 先を変えられていないことを確かめてから実行する。 */
-export function pushBranch(branch: string, cwd = process.cwd()): void {
+/**
+ * コミットをリモートのブランチへ push する。push 先が想定のリポジトリであることを確かめてから実行する。
+ * 検査した木と push する木がずれないよう、ブランチ名ではなく SHA を指定する。
+ */
+export function pushCommit(sha: string, branch: string, expected: RemoteIdentity, cwd = process.cwd()): void {
+  if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`コミットの SHA が不正です: ${sha}`);
   const url = remote();
-  checkRemoteNotRedirected(url, cwd);
-  git(["push", url, `HEAD:refs/heads/${branch}`], cwd);
+  checkPushTarget(url, expected, cwd);
+  git(["push", url, `${sha}:refs/heads/${branch}`], cwd);
 }
 
 /**
- * push 先がリポジトリの設定で別のリポジトリに向けられていないか確かめる。
- * `url.<別リポジトリ>.insteadOf` は ls-remote --get-url に現れるが、`pushInsteadOf` は現れず、push のときだけ効く。
- * そのため、解決後の URL を見るだけでは足りない。書き換えの設定そのものがリポジトリにあれば拒否する。
+ * push 先が別のリポジトリへ向けられていないか確かめる。
+ * - `url.<別リポジトリ>.pushInsteadOf` は push のときだけ効き、`ls-remote --get-url` には現れない。
+ * - `--local` はリポジトリ直下の設定しか読まず、`include` / `includeIf` や worktree 固有の設定を見落とす。
+ *   そのため、既定(有効な設定すべて)で読み、対象の URL に効く書き換えだけを違反とする。
+ * - 最後に、実際に使う URL が期待するリポジトリを指しているかを確かめる(origin の URL 自体の差し替えを防ぐ)。
  */
-function checkRemoteNotRedirected(url: string, cwd: string): void {
-  // --local: リポジトリの設定だけを見る(エージェントが書けるのはここ)。利用者自身のグローバル設定は尊重する。
-  const rewrites = tryGit(["config", "--local", "--name-only", "--get-regexp", "^url\\..*\\.(push)?insteadof$"], cwd);
-  if (rewrites) throw new Error(`push 先を書き換える設定がリポジトリにあります: ${rewrites.split("\n").join(", ")}`);
-  if (url === "origin") {
-    const pushUrl = tryGit(["config", "--local", "--get-all", "remote.origin.pushurl"], cwd);
-    if (pushUrl) throw new Error(`origin に pushurl が設定されています: ${pushUrl.split("\n").join(", ")}`);
-    return;
+/** push 先として認めるリポジトリ。host が空文字なら、ホストは問わずパスだけで照合する(ローカルのリポジトリ)。 */
+export interface RemoteIdentity {
+  host: string;
+  repo: string;
+}
+
+function checkPushTarget(url: string, expected: RemoteIdentity, cwd: string): void {
+  for (const line of (tryGit(["config", "--includes", "--get-regexp", "^url\\..*\\.(push)?insteadof$"], cwd) ?? "").split("\n")) {
+    const i = line.indexOf(" ");
+    if (i < 0) continue;
+    const prefix = line.slice(i + 1);
+    const base = line.slice(4, line.lastIndexOf(".", line.lastIndexOf(".") - 1));
+    if (prefix && url.startsWith(prefix)) {
+      throw new Error(`push 先を書き換える設定があります(${prefix} → ${base})`);
+    }
   }
-  const resolved = git(["ls-remote", "--get-url", url], cwd);
-  if (resolved !== url) throw new Error(`push 先が設定で書き換えられています(指定: ${url}、実際: ${resolved})`);
+  const effective = url === "origin" ? (tryGit(["config", "--get", "remote.origin.pushurl"], cwd) ?? git(["ls-remote", "--get-url", "origin"], cwd)) : url;
+  if (!pointsAt(effective, expected)) {
+    throw new Error(`push 先が ${expected.host ? `${expected.host}/` : ""}${expected.repo} ではありません: ${effective}`);
+  }
+}
+
+/**
+ * URL が期待するリポジトリを指しているか。ホストとパスを分けて、パスは完全一致で照合する。
+ * 末尾の一致だけで判定すると、`https://evil.example/x/owner/name` のような URL を通してしまう。
+ */
+export function pointsAt(url: string, expected: RemoteIdentity): boolean {
+  const target = parseRemote(url);
+  if (!target) return false;
+  if (target.repo !== expected.repo.replace(/\.git$/, "").replace(/^\/+|\/+$/g, "")) return false;
+  return expected.host === "" || target.host.toLowerCase() === expected.host.toLowerCase();
+}
+
+/** URL からホストとリポジトリのパスを取り出す。https、ssh(scp 形式と URL 形式)、ローカルのパスに対応する。 */
+function parseRemote(url: string): RemoteIdentity | null {
+  const trimmed = url.trim();
+  const clean = (path: string) => path.replace(/\.git$/, "").replace(/^\/+|\/+$/g, "");
+  const scheme = /^(?:https?|ssh|git|file):\/\/(?:[^@/]*@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(trimmed);
+  if (scheme) return { host: scheme[1]!, repo: clean(scheme[2]!) };
+  const scp = /^(?:[^@/]+@)([^/:]+):(.+)$/.exec(trimmed);
+  if (scp) return { host: scp[1]!, repo: clean(scp[2]!) };
+  if (/^[./]/.test(trimmed)) return { host: "", repo: clean(trimmed) };
+  return null;
 }
 
 /**

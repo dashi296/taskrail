@@ -3,7 +3,7 @@ import { packageVersion, protectedPaths } from "../core/config.js";
 import type { Issue } from "../adapters/types.js";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { currentStage, decide, getStage, sizeOf } from "../core/flow.js";
-import { commitCountSince, dirtyFiles, fetchCommit, git, protectedChanges, pushBranch, resolveBranch } from "../core/git.js";
+import { commitCountSince, dirtyFiles, fetchCommit, git, protectedChanges, pushCommit, resolveBranch } from "../core/git.js";
 import { countRework, parseRuns, renderComment, type RunRecord } from "../core/record.js";
 import { type AgentResult, combineStatus, readResult } from "../core/result.js";
 import { DIFF_AGENTS, RUN_DIR } from "./route.js";
@@ -85,20 +85,11 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
       return null;
     });
   }
-  if (!violation) {
-    // 検証してからここまでの間に push されていれば、その結果は古い。
-    violation = check(() => {
-      // 代入は上の check の中で行われるため、型の絞り込みには現れない。
-      const v = verified as { ref: string; sha: string } | null;
-      if (!v) return null;
-      const now = ctx.platform.branchHead(v.ref);
-      if (now !== v.sha) return `検証中に ${v.ref} が更新されました(${v.sha.slice(0, 7)} → ${String(now).slice(0, 7)})`;
-      return null;
-    });
-  }
   let head: string | undefined;
   if (!violation && stage.mode === "write" && status === "pass") {
     violation = check(() => {
+      // 検査する木を固定する。以降の push と記録は、この SHA に対してのみ行う。
+      head = git(["rev-parse", "HEAD"], cwd);
       const base = remoteSha(ctx.platform.defaultBranch());
       const protectedHit = protectedChanges(base, protectedPaths(ctx.project), cwd);
       const uncommitted = dirtyFiles(cwd).filter((f) => !f.startsWith(".taskrail/"));
@@ -112,8 +103,7 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
       if (nowStale) return log(`#${issue.number}: ${nowStale}。この実行の結果は反映しません`);
       // push や PR の作成に失敗しても、記録を残さずに終わらせない。
       violation = check(() => {
-        prUrl = publish(ctx, issue.number, issue.title, results[0]!, cwd);
-        head = git(["rev-parse", "HEAD"], cwd);
+        prUrl = publish(ctx, issue.number, issue.title, results[0]!, cwd, head!);
         return null;
       }, "push または PR の作成に失敗しました");
     }
@@ -121,6 +111,17 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
 
   // 3. 次の列を決める。
   const runs = parseRuns(ctx.platform.listComments(issue.number), trustedAuthors(ctx.project));
+  if (!violation) {
+    // ここまでの問い合わせの間に push されていれば、検証の結果は古い。記録は残し、列は動かさない。
+    violation = check(() => {
+      // 代入は上の check の中で行われるため、型の絞り込みには現れない。
+      const v = verified as { ref: string; sha: string } | null;
+      if (!v) return null;
+      const now = ctx.platform.branchHead(v.ref);
+      if (now !== v.sha) return `検証中に ${v.ref} が更新されました(${v.sha.slice(0, 7)} → ${String(now).slice(0, 7)})`;
+      return null;
+    });
+  }
   const decision = decide(ctx.project, {
     stage,
     status,
@@ -178,11 +179,11 @@ function applyHintLabels(ctx: Ctx, issue: number, current: string[], results: Ag
   if (add.length) ctx.platform.addLabels(issue, [...new Set(add)]);
 }
 
-function publish(ctx: Ctx, issue: number, title: string, result: AgentResult, cwd: string): string {
+function publish(ctx: Ctx, issue: number, title: string, result: AgentResult, cwd: string, sha: string): string {
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
   const expected = resolveBranch(ctx.project.branch_prefix, issue, title, cwd);
   if (branch !== expected) throw new Error(`作業ブランチが想定と違います(期待: ${expected}、実際: ${branch})`);
-  pushBranch(branch, cwd);
+  pushCommit(sha, branch, ctx.platform.remoteIdentity(), cwd);
   const existing = ctx.platform.findPullRequestByBranch(branch);
   if (existing) return existing.url;
   const pr = ctx.platform.createPullRequest({

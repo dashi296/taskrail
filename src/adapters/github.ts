@@ -41,6 +41,13 @@ export class GitHub implements Platform {
       .map((l) => JSON.parse(l) as T);
   }
 
+  remoteIdentity(): { host: string; repo: string } {
+    // GHES では GH_HOST か GITHUB_SERVER_URL でホストが変わる。
+    const server = process.env.GITHUB_SERVER_URL;
+    const host = process.env.GH_HOST ?? (server ? new URL(server).host : "github.com");
+    return { host, repo: this.repo };
+  }
+
   getIssue(n: number): Issue {
     return toIssue(JSON.parse(this.api(`issues/${n}`)) as RawIssue);
   }
