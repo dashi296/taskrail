@@ -81,7 +81,8 @@ const NEEDS: Record<string, { comments: boolean; spec: boolean; plan: boolean; f
   plan: { comments: true, spec: true, plan: true, feedback: false, diff: false },
   implement: { comments: false, spec: true, plan: true, feedback: true, diff: false },
   "verify-spec": { comments: false, spec: true, plan: false, feedback: false, diff: true },
-  "code-review": { comments: false, spec: false, plan: false, feedback: false, diff: true },
+  // 仕様は「決まったこと」を知るために渡す。仕様との照合そのものは verify-spec の担当。
+  "code-review": { comments: false, spec: true, plan: false, feedback: false, diff: true },
 };
 
 const MAX_COMMENT_CHARS = 12_000;
