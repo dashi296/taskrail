@@ -1,0 +1,158 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { applyWith } from "../src/commands/apply.js";
+import { branchName } from "../src/core/git.js";
+import { FakePlatform, fakeCtx } from "./fakes.js";
+
+/** origin(bare)と作業ツリーを持つリポジトリ。apply は API の SHA を基準にするため、実物の remote が要る。 */
+function repo(): { dir: string; git: (...args: string[]) => string; sha: () => string } {
+  const dir = mkdtempSync(join(tmpdir(), "taskrail-apply-"));
+  const origin = join(dir, "origin.git");
+  const work = join(dir, "work");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+  execFileSync("git", ["clone", "-q", origin, work]);
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: work, encoding: "utf8" }).trim();
+  writeFileSync(join(work, "a.txt"), "1\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  git("push", "-q", "-u", "origin", "main");
+  return { dir: work, git, sha: () => git("rev-parse", "HEAD") };
+}
+
+const result = (agent: string, extra: Record<string, unknown> = {}) => ({
+  agent,
+  status: "pass",
+  summary: "やりました。やりました。やりました。",
+  ...extra,
+});
+
+function writeResult(dir: string, agent: string, body: unknown): void {
+  mkdirSync(join(dir, ".taskrail/run"), { recursive: true });
+  writeFileSync(join(dir, ".taskrail/run", `result-${agent}.json`), JSON.stringify(body));
+}
+
+describe("apply の強制ルール", () => {
+  let p: FakePlatform;
+  let r: ReturnType<typeof repo>;
+  const issueTitle = "ボタンを追加する";
+  const lastComment = () => p.listComments(1).at(-1)!.body;
+
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    p = new FakePlatform();
+    r = repo();
+    const issue = p.addIssue(1, ["flow::spec"]);
+    issue.title = issueTitle;
+    p.issues.set(1, { ...p.getIssue(1), title: issueTitle });
+    p.heads.set("main", r.sha());
+  });
+
+  describe("読み取り工程", () => {
+    const run = () => applyWith(fakeCtx(p), { issue: "1", stage: "spec" }, r.dir);
+
+    it("変更がなければ、結果どおりに記録する", () => {
+      writeResult(r.dir, "spec", result("spec", { artifact: "## 仕様" }));
+      run();
+      expect(lastComment()).toContain('"status":"pass"');
+      expect(lastComment()).toContain("## 仕様");
+    });
+    it("作業ツリーにファイルの変更があれば違反にする", () => {
+      writeResult(r.dir, "spec", result("spec"));
+      writeFileSync(join(r.dir, "a.txt"), "2\n");
+      run();
+      expect(lastComment()).toContain("読み取り専用の工程でファイルが変更されました");
+      expect(lastComment()).toContain('"status":"error"');
+    });
+    it("コミットしてしまってもリモートと比べて検出する", () => {
+      writeResult(r.dir, "spec", result("spec"));
+      writeFileSync(join(r.dir, "a.txt"), "2\n");
+      r.git("add", "-A");
+      r.git("commit", "-qm", "こっそり");
+      run();
+      expect(lastComment()).toContain("読み取り専用の工程でコミットが作られました");
+    });
+    it("違反した実行の成果物は次工程に渡さない", () => {
+      writeResult(r.dir, "spec", result("spec", { artifact: "## 偽の仕様" }));
+      writeFileSync(join(r.dir, "a.txt"), "2\n");
+      run();
+      expect(lastComment()).not.toContain("## 偽の仕様");
+    });
+    it("結果ファイルがなければ不備として記録する", () => {
+      run();
+      expect(lastComment()).toContain("結果ファイルがありません");
+      expect(lastComment()).toContain('"status":"error"');
+    });
+  });
+
+  describe("書き込み工程", () => {
+    const branch = () => branchName("issue-", 1, issueTitle);
+    const startWork = (files: Record<string, string>) => {
+      p.removeLabel(1, "flow::spec");
+      p.addLabels(1, ["flow::doing"]);
+      r.git("checkout", "-q", "-B", branch());
+      for (const [path, body] of Object.entries(files)) {
+        mkdirSync(join(r.dir, path, ".."), { recursive: true });
+        writeFileSync(join(r.dir, path), body);
+      }
+      writeResult(r.dir, "implement", result("implement", { pr_title: "ボタンを追加する" }));
+    };
+    const commitAll = () => {
+      r.git("add", "-A");
+      r.git("commit", "-qm", "実装");
+    };
+    const run = () => applyWith(fakeCtx(p), { issue: "1", stage: "doing" }, r.dir);
+
+    it("通常の変更なら push して PR を作り、記録にブランチと SHA を残す", () => {
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      run();
+      expect(p.createdPullRequests).toHaveLength(1);
+      expect(p.createdPullRequests[0]).toMatchObject({ head: branch(), base: "main" });
+      expect(lastComment()).toContain(`"branch":"${branch()}"`);
+      expect(lastComment()).toContain(`"sha":"${r.sha()}"`);
+      expect(execFileSync("git", ["ls-remote", "origin", branch()], { cwd: r.dir, encoding: "utf8" })).toContain(branch());
+    });
+    it("保護対象のファイルを変更していたら push しない", () => {
+      startWork({ ".github/workflows/ci.yml": "on: push\n" });
+      commitAll();
+      run();
+      expect(lastComment()).toContain("保護対象のファイルが変更されました");
+      expect(p.createdPullRequests).toHaveLength(0);
+      expect(execFileSync("git", ["ls-remote", "origin", branch()], { cwd: r.dir, encoding: "utf8" })).toBe("");
+    });
+    it("コミットされていない変更があれば止める", () => {
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      writeFileSync(join(r.dir, "src/button.ts"), "export const x = 2;\n");
+      run();
+      expect(lastComment()).toContain("コミットされていない変更があります");
+      expect(p.createdPullRequests).toHaveLength(0);
+    });
+    it("pass と報告されてもコミットがなければ止める", () => {
+      startWork({});
+      run();
+      expect(lastComment()).toContain("コミットがありません");
+      expect(p.createdPullRequests).toHaveLength(0);
+    });
+    it("PR の作成に失敗しても、記録を残して止める", () => {
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      p.failCreatePullRequest = true;
+      run();
+      expect(lastComment()).toContain("push または PR の作成に失敗しました");
+      expect(lastComment()).toContain('"status":"error"');
+    });
+    it("ai::ok が付いていても、結果が fail なら push しない", () => {
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      writeResult(r.dir, "implement", { ...result("implement"), status: "fail" });
+      run();
+      expect(p.createdPullRequests).toHaveLength(0);
+    });
+  });
+});

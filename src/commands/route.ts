@@ -32,13 +32,19 @@ export interface RouteOptions {
  * ここではAIを呼ばない。決定的な処理だけを行い、結果を step output とファイルに書き出す。
  */
 export function route(opts: RouteOptions): void {
+  if (!isEnabled()) {
+    log("スキップ: TASKRAIL_ENABLED=false(キルスイッチ)");
+    return setOutputs({ run: false, reason: "TASKRAIL_ENABLED=false(キルスイッチ)" });
+  }
+  routeWith(loadCtx(opts), opts);
+}
+
+/** route の本体。テストから Ctx と作業ディレクトリを与えられるように分けてある。 */
+export function routeWith(ctx: Ctx, opts: RouteOptions, cwd = process.cwd()): void {
   const skip = (why: string) => {
     log(`スキップ: ${why}`);
     setOutputs({ run: false, reason: why });
   };
-  if (!isEnabled()) return skip("TASKRAIL_ENABLED=false(キルスイッチ)");
-
-  const ctx = loadCtx(opts);
   const ev: GhEvent = opts.event ? (JSON.parse(readFileSync(opts.event, "utf8")) as GhEvent) : {};
   const number = opts.issue ? Number(opts.issue) : ev.issue?.number;
   if (!number) return skip("Issue番号が分かりません");
@@ -72,7 +78,7 @@ export function route(opts: RouteOptions): void {
   }
 
   // ルール文書の有無は、作業ブランチに切り替える前(既定ブランチの状態)で判定する。
-  const rules = repoRules(process.cwd(), ctx.project);
+  const rules = repoRules(cwd, ctx.project);
   const comments = ctx.platform.listComments(issue.number);
   const trusted = trustedAuthors(ctx.project);
   const needsBranch = stage.mode === "write" || stage.agents.some((a) => DIFF_AGENTS.has(a));
@@ -82,9 +88,9 @@ export function route(opts: RouteOptions): void {
 
   if (needsBranch) {
     base = ctx.platform.defaultBranch();
-    tryGit(["fetch", "origin", "--prune"]);
-    branch = resolveBranch(ctx.project.branch_prefix, issue.number, issue.title);
-    if (opts.checkout !== false) checkoutBranch(branch, base, stage.mode === "write");
+    tryGit(["fetch", "origin", "--prune"], cwd);
+    branch = resolveBranch(ctx.project.branch_prefix, issue.number, issue.title, cwd);
+    if (opts.checkout !== false) checkoutBranch(branch, base, stage.mode === "write", cwd);
     if (stage.mode === "write") {
       const fromVerify = latestFailureFeedback(comments, trusted);
       const pr = ctx.platform.findPullRequestByBranch(branch);
@@ -92,12 +98,13 @@ export function route(opts: RouteOptions): void {
     }
   }
 
-  rmSync(RUN_DIR, { recursive: true, force: true });
-  mkdirSync(RUN_DIR, { recursive: true });
-  excludeTaskrailDir();
+  const runDir = join(cwd, RUN_DIR);
+  rmSync(runDir, { recursive: true, force: true });
+  mkdirSync(runDir, { recursive: true });
+  excludeTaskrailDir(cwd);
 
   // 読み取り工程には Bash を渡さない(git diff --output= などで任意の場所に書けるため)。差分はここで書き出して渡す。
-  const diffFiles = base && stage.mode === "read" ? writeDiffFiles(base) : null;
+  const diffFiles = base && stage.mode === "read" ? writeDiffFiles(base, cwd, runDir) : null;
 
   const isTaskrailComment = (body: string) => parseRuns([{ id: 0, author: "", body, createdAt: "" }]).length > 0;
   const humanComments = comments.filter((c) => !isTaskrailComment(c.body) && !ctx.project.bot_logins.includes(c.author));
@@ -117,8 +124,8 @@ export function route(opts: RouteOptions): void {
   };
 
   stage.agents.forEach((agent, i) => {
-    const resultPath = join(RUN_DIR, `result-${agent}.json`);
-    const promptPath = join(RUN_DIR, `prompt-${agent}.md`);
+    const resultPath = join(runDir, `result-${agent}.json`);
+    const promptPath = join(runDir, `prompt-${agent}.md`);
     writeFileSync(
       promptPath,
       buildPrompt({
@@ -140,15 +147,15 @@ export function route(opts: RouteOptions): void {
     outputs[`result_${i + 1}`] = resultPath;
   });
 
-  writeFileSync(join(RUN_DIR, "route.json"), JSON.stringify(outputs, null, 2));
+  writeFileSync(join(runDir, "route.json"), JSON.stringify(outputs, null, 2));
   log(`#${issue.number} ${stage.id}: ${stage.agents.join(" → ")} を実行します`);
   setOutputs(outputs);
 }
 
 /** ベースブランチとの差分とコミットの一覧を RUN_DIR に書き出す。 */
-function writeDiffFiles(base: string): { patch: string; log: string } {
-  const files = { patch: join(RUN_DIR, "diff.patch"), log: join(RUN_DIR, "commits.txt") };
-  const run = (args: string[]) => tryGit(args) ?? `(git ${args[0]} に失敗しました)`;
+function writeDiffFiles(base: string, cwd: string, runDir: string): { patch: string; log: string } {
+  const files = { patch: join(runDir, "diff.patch"), log: join(runDir, "commits.txt") };
+  const run = (args: string[]) => tryGit(args, cwd) ?? `(git ${args[0]} に失敗しました)`;
   writeFileSync(files.patch, run(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `origin/${base}...HEAD`]) + "\n");
   writeFileSync(files.log, run(["log", "--no-color", "--stat", `origin/${base}..HEAD`]) + "\n");
   return files;
@@ -182,11 +189,11 @@ function checkSender(ctx: Ctx, sender: { login: string; type: string }, issue: n
   return ok ? null : `${prev.id} → ${to} は、${isBot ? "taskrail" : "人間"}に許可されていない遷移です。`;
 }
 
-function checkoutBranch(branch: string, base: string, createIfMissing: boolean): void {
-  if (tryGit(["rev-parse", "--verify", `origin/${branch}`]) !== null) {
-    git(["checkout", "-B", branch, `origin/${branch}`]);
+function checkoutBranch(branch: string, base: string, createIfMissing: boolean, cwd: string): void {
+  if (tryGit(["rev-parse", "--verify", `origin/${branch}`], cwd) !== null) {
+    git(["checkout", "-B", branch, `origin/${branch}`], cwd);
   } else if (createIfMissing) {
-    git(["checkout", "-B", branch, `origin/${base}`]);
+    git(["checkout", "-B", branch, `origin/${base}`], cwd);
   } else {
     throw new Error(`検証対象のブランチ origin/${branch} がありません`);
   }

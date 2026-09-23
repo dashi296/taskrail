@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { packageVersion, protectedPaths } from "../core/config.js";
 import type { Issue } from "../adapters/types.js";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
@@ -21,7 +22,11 @@ export interface ApplyOptions {
  */
 export function apply(opts: ApplyOptions): void {
   if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
-  const ctx = loadCtx(opts);
+  applyWith(loadCtx(opts), opts);
+}
+
+/** apply の本体。テストから Ctx と作業ディレクトリを与えられるように分けてある。 */
+export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): void {
   const stage = getStage(ctx.flow, opts.stage);
   const issue = ctx.platform.getIssue(Number(opts.issue));
   // エージェントの実行中に人間が列を戻す・閉じるなどした場合、古い実行の結果で上書きしない。
@@ -32,7 +37,7 @@ export function apply(opts: ApplyOptions): void {
   const results: AgentResult[] = [];
   const errors: string[] = [];
   for (const agent of stage.agents) {
-    const parsed = readResult(`${RUN_DIR}/result-${agent}.json`, agent);
+    const parsed = readResult(join(cwd, RUN_DIR, `result-${agent}.json`), agent);
     if (!parsed.ok) {
       errors.push(`${agent}: ${parsed.error}`);
       break;
@@ -57,16 +62,16 @@ export function apply(opts: ApplyOptions): void {
   const remoteSha = (branch: string): string => {
     const sha = ctx.platform.branchHead(branch);
     if (!sha) throw new Error(`リモートのブランチ ${branch} がありません`);
-    return fetchCommit(sha);
+    return fetchCommit(sha, cwd);
   };
   if (!violation && stage.mode === "read") {
     violation = check(() => {
-      const dirty = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
+      const dirty = dirtyFiles(cwd).filter((f) => !f.startsWith(".taskrail/"));
       if (dirty.length) return `読み取り専用の工程でファイルが変更されました: ${dirty.slice(0, 5).join(", ")}`;
       // コミットしてしまえば作業ツリーはきれいに見えるため、リモートにないコミットも検出する。
       const onBranch = stage.agents.some((a) => DIFF_AGENTS.has(a));
-      const ref = onBranch ? resolveBranch(ctx.project.branch_prefix, issue.number, issue.title) : ctx.platform.defaultBranch();
-      if (commitCountSince(remoteSha(ref)) > 0) return "読み取り専用の工程でコミットが作られました";
+      const ref = onBranch ? resolveBranch(ctx.project.branch_prefix, issue.number, issue.title, cwd) : ctx.platform.defaultBranch();
+      if (commitCountSince(remoteSha(ref), cwd) > 0) return "読み取り専用の工程でコミットが作られました";
       return null;
     });
   }
@@ -74,11 +79,11 @@ export function apply(opts: ApplyOptions): void {
   if (!violation && stage.mode === "write" && status === "pass") {
     violation = check(() => {
       const base = remoteSha(ctx.platform.defaultBranch());
-      const protectedHit = protectedChanges(base, protectedPaths(ctx.project));
-      const uncommitted = dirtyFiles().filter((f) => !f.startsWith(".taskrail/"));
+      const protectedHit = protectedChanges(base, protectedPaths(ctx.project), cwd);
+      const uncommitted = dirtyFiles(cwd).filter((f) => !f.startsWith(".taskrail/"));
       if (protectedHit.length) return `保護対象のファイルが変更されました: ${protectedHit.slice(0, 5).join(", ")}`;
       if (uncommitted.length) return `コミットされていない変更があります: ${uncommitted.slice(0, 5).join(", ")}`;
-      if (commitCountSince(base) === 0) return "pass と報告されましたが、コミットがありません";
+      if (commitCountSince(base, cwd) === 0) return "pass と報告されましたが、コミットがありません";
       return null;
     });
     if (!violation && !opts.dryRun) {
@@ -86,8 +91,8 @@ export function apply(opts: ApplyOptions): void {
       if (nowStale) return log(`#${issue.number}: ${nowStale}。この実行の結果は反映しません`);
       // push や PR の作成に失敗しても、記録を残さずに終わらせない。
       violation = check(() => {
-        prUrl = publish(ctx, issue.number, issue.title, results[0]!);
-        head = git(["rev-parse", "HEAD"]);
+        prUrl = publish(ctx, issue.number, issue.title, results[0]!, cwd);
+        head = git(["rev-parse", "HEAD"], cwd);
         return null;
       }, "push または PR の作成に失敗しました");
     }
@@ -110,7 +115,7 @@ export function apply(opts: ApplyOptions): void {
     blocked: decision.addBlocked,
     version: packageVersion(),
     at: new Date().toISOString(),
-    ...(prUrl && head ? { branch: git(["rev-parse", "--abbrev-ref", "HEAD"]), sha: head } : {}),
+    ...(prUrl && head ? { branch: git(["rev-parse", "--abbrev-ref", "HEAD"], cwd), sha: head } : {}),
   };
   // 違反があった実行の成果物は、次工程に引き継がせない。
   const shown = violation ? results.map(({ artifact: _dropped, ...r }) => r) : results;
@@ -152,11 +157,11 @@ function applyHintLabels(ctx: Ctx, issue: number, current: string[], results: Ag
   if (add.length) ctx.platform.addLabels(issue, [...new Set(add)]);
 }
 
-function publish(ctx: Ctx, issue: number, title: string, result: AgentResult): string {
-  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
-  const expected = resolveBranch(ctx.project.branch_prefix, issue, title);
+function publish(ctx: Ctx, issue: number, title: string, result: AgentResult, cwd: string): string {
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+  const expected = resolveBranch(ctx.project.branch_prefix, issue, title, cwd);
   if (branch !== expected) throw new Error(`作業ブランチが想定と違います(期待: ${expected}、実際: ${branch})`);
-  pushBranch(branch);
+  pushBranch(branch, cwd);
   const existing = ctx.platform.findPullRequestByBranch(branch);
   if (existing) return existing.url;
   const pr = ctx.platform.createPullRequest({
