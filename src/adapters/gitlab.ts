@@ -31,6 +31,7 @@ export class GitLab implements Platform {
   listLabels(): string[] { return this.todo("listLabels"); }
   upsertLabel(_name: string, _color: string, _description: string): void { this.todo("upsertLabel"); }
   getPermission(_user: string): Permission { return this.todo("getPermission"); }
+  remoteIdentity(): { host: string; repo: string } { return this.todo("remoteIdentity"); }
   defaultBranch(): string { return this.todo("defaultBranch"); }
   findPullRequestByBranch(_branch: string): PullRequest | null { return this.todo("findPullRequestByBranch"); }
   createPullRequest(_args: { head: string; base: string; title: string; body: string }): PullRequest {

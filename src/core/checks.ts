@@ -33,7 +33,7 @@ export function runChecks(sha: string, commands: string[], cwd = process.cwd()):
 }
 
 /**
- * 検査を動かす環境。認証情報になりうる変数を落とし、HOME を使い捨ての場所に向ける。
+ * 検査を動かす環境。渡すのは許可した変数だけにし、HOME を使い捨ての場所に向ける。
  * これは sandbox ではない。防げるのは「手元の認証情報をそのまま渡すこと」までで、
  * 任意のコードが利用者の権限で動くことは変わらない(docs/security.md の残りのリスクを参照)。
  */
@@ -41,15 +41,18 @@ function scrubbed(dir: string): NodeJS.ProcessEnv {
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
   const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (SECRETISH.test(key)) continue;
-    env[key] = value;
+  for (const name of [...ALLOWED, ...extraAllowed()]) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
   }
   return {
     ...env,
     // ~/.netrc、~/.ssh、~/.npmrc、クラウドの認証情報ファイルなどに届かせない。
     HOME: home,
     XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+    XDG_DATA_HOME: join(home, ".local", "share"),
+    TMPDIR: process.env.TMPDIR ?? "/tmp",
     GH_CONFIG_DIR: join(home, "gh"),
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_GLOBAL: "/dev/null",
@@ -57,9 +60,44 @@ function scrubbed(dir: string): NodeJS.ProcessEnv {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "credential.helper",
     GIT_CONFIG_VALUE_0: "",
+    // 認証を尋ねる経路を塞ぐ(GIT_TERMINAL_PROMPT だけでは ASKPASS が先に呼ばれる)。
+    GIT_ASKPASS: "/bin/false",
+    SSH_ASKPASS: "/bin/false",
+    SSH_ASKPASS_REQUIRE: "never",
     GIT_SSH_COMMAND: "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=/dev/null",
   };
 }
 
-/** 認証情報になりうる環境変数(名前で判断する)。 */
-const SECRETISH = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|APIKEY|API_KEY|AUTH|SSH_AUTH_SOCK|NETRC|TASKRAIL_GIT_REMOTE/i;
+/** 検査に渡す環境変数。ここに挙げたものだけを渡す(認証情報を取りこぼさないため)。 */
+const ALLOWED = [
+  "PATH",
+  "SHELL",
+  "TERM",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "USER",
+  "LOGNAME",
+  "NODE_VERSION",
+  "NVM_DIR",
+  "NVM_BIN",
+  "ASDF_DIR",
+  "ASDF_DATA_DIR",
+  "MISE_DATA_DIR",
+  "PYENV_ROOT",
+  "RBENV_ROOT",
+  "JAVA_HOME",
+  "GOROOT",
+  "GOPATH",
+  "CI",
+];
+
+/** 環境変数 TASKRAIL_CHECK_ENV で、渡す変数を追加できる(私有レジストリの設定など)。 */
+function extraAllowed(): string[] {
+  return (process.env.TASKRAIL_CHECK_ENV ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+

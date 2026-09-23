@@ -16,7 +16,7 @@ taskrail は、リポジトリへの書き込み権限と API キーを持つエ
 | Issue コメントに偽の仕様・実行記録を書き込む | マーカーは信頼する投稿者(Actions では App、ローカル実行では gh のログインユーザー)のコメントからだけ読む | `core/record.ts`、`core/context.ts` |
 | エージェントの出力(要約・質問・指摘など)に偽のマーカーを仕込み、実行記録や仕様を偽造する | 実行記録のマーカーはコメントの先頭だけを読む。成果物は最後のマーカーだけを読む。エージェント由来の文字列はすべて無害化する | `core/record.ts` |
 | エージェントが書き込み用の認証情報で、Issue やラベルに直接書き込む・push する | エージェントには読み取り専用の App トークンを渡し、checkout にトークンを残さない(claude-code-action はこのトークンを origin の URL に埋め込むため、エージェントからは読めるが、読み取り専用である)。apply は origin を使わず、URL を直接指定して push する。ローカル実行では gh と git の認証を外して起動する | ワークフロー、`scripts/local-run.sh` |
-| エージェントが `.git` の hook や設定、`origin/*` の ref を書き換えて、apply の検査を欺く | apply の git 操作では hook と fsmonitor を無効にする。比較の基準は API で取得した SHA。git の失敗は違反として扱う。push 先を書き換える設定(`url.*.insteadOf` / `url.*.pushInsteadOf` / `remote.origin.pushurl`)がリポジトリにあれば push しない | `core/git.ts`、`commands/apply.ts` |
+| エージェントが `.git` の hook や設定、`origin/*` の ref を書き換えて、apply の検査を欺く | apply の git 操作では hook と fsmonitor を無効にする。比較の基準は API で取得した SHA。git の失敗は違反として扱う。push 先を書き換える設定(`url.*.insteadOf` / `pushInsteadOf`。`include` や worktree 固有の設定も含む)があれば push しない。push 先の URL が対象リポジトリを指していることも確かめ、検査した SHA だけを push する | `core/git.ts`、`commands/apply.ts` |
 | 読み取り専用の工程でコミットを作る・ほかのファイルを書く | 書き込めるのは結果ファイルの置き場所だけで、Bash は渡さない(`git diff --output=` などで任意の場所に書けるため)。差分は route が書き出す。リモートにないコミットも違反として検出する | `commands/route.ts`、`commands/apply.ts` |
 | 権限のない人の修正依頼で列を戻し、その文面を実装エージェントに渡す | 修正依頼を出した人の write 権限を確認する。実装に渡すレビューは write 以上の人のものだけ | `commands/board.ts`、`adapters/github.ts` |
 | AI が CI 定義や設定を書き換える | `protected_paths` の変更を検出したら push せずに止める | `commands/apply.ts` |
@@ -25,7 +25,7 @@ taskrail は、リポジトリへの書き込み権限と API キーを持つエ
 | fork の同名ブランチの PR で列が動く | 同じリポジトリのブランチだけを対象にする | ワークフロー |
 | 読み取り専用の工程で AI がコードを変更する | 作業ツリーに変更があれば違反として止める。差分を読む工程では、検証したコミットがブランチの先頭と一致することも確かめる(書き込み直前にもう一度確認する) | `commands/apply.ts` |
 | blocked の質問に、権限のない人が答えて指示を注入する | 回答として渡すのは write 以上の人のコメントだけ。直近の記録が blocked のときに限る。プロンプトでは未信頼の入力として扱う | `core/answers.ts`、`flow/prompts/_common.md` |
-| ローカルの検査(`--local-checks`)が、エージェントの書いたコードを手元の認証情報つきで実行する | 記録した sha だけを取り出した作業ツリーで、認証情報になりうる環境変数を落とし、HOME を使い捨ての場所に向け、gh・git・ssh の設定を読ませない。sandbox ではないので、任意のコードが利用者の権限で動くことは変わらない | `core/checks.ts` |
+| ローカルの検査(`--local-checks`)が、エージェントの書いたコードを手元の認証情報つきで実行する | 記録した sha だけを取り出した作業ツリーで、渡す環境変数を許可リストに絞り(追加は `TASKRAIL_CHECK_ENV`)、HOME を使い捨ての場所に向け、gh・git・ssh の設定と ASKPASS を無効にする。sandbox ではないので、任意のコードが利用者の権限で動くことは変わらない | `core/checks.ts` |
 | エージェントの実行中に人間が列を戻す・Issue を閉じる | apply は、Issue が open で、列が実行時と同じで、blocked でないときだけ結果を反映する(開始時と書き込みの直前に確認) | `commands/apply.ts` |
 | 実装と検証の無限ループ、コストの暴走 | 差し戻しの上限、`--max-turns`、ジョブのタイムアウト、WIP 上限 | `core/flow.ts`、ワークフロー |
 | 配布元の改ざん | 導入先は taskrail をタグで参照する。実行時に外部の URL から指示を取得しない | `templates/` |

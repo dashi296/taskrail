@@ -170,6 +170,8 @@ LOCAL_CHECKS=1 /path/to/taskrail/scripts/local-flow.sh 12 # CI を待たず、�
 `LOCAL_CHECKS=1` は、設定の `check_commands` を、記録されたコミットだけを取り出した作業ツリーで実行します。
 手元の未コミットの変更は混ざりません。まっさらな checkout で動くコマンドにしてください(例: `npm ci && npm test`)。
 本番(Actions)は PR の CI の成功で判定するため、判定の根拠が異なります。
+検査は、認証情報を渡さない環境(許可リストの環境変数、使い捨ての HOME)で実行します。
+私有レジストリの設定などを渡したい場合は `TASKRAIL_CHECK_ENV=MY_VAR,OTHER_VAR` を指定します。
 
 止まるのは、仕様の承認、計画の承認、最終レビュー、`blocked`、着手できないとき、CI の待ち時間切れです。
 承認はラベルを手で付け替え、もう一度実行すると続きから進みます。
