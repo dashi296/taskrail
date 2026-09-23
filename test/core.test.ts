@@ -102,7 +102,10 @@ describe("プロンプトの組み立て", () => {
     expect(impl).toContain("<feedback");
     expect(impl).not.toContain("<comments note");
     const review = buildPrompt({ ...ctx, agent: "code-review" });
-    expect(review).not.toContain("<spec note");
+    // 仕様は「決まったこと」として渡す。計画・差し戻しの指摘は渡さない。
+    expect(review).toContain("<spec note");
+    expect(review).not.toContain("<plan>");
+    expect(review).not.toContain("<feedback note");
     expect(review).toContain("git diff origin/main...HEAD");
   });
   it("コメント全体を渡さない工程にも、blocked の質問への回答は渡す", () => {
