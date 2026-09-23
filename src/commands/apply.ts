@@ -14,6 +14,14 @@ export interface ApplyOptions {
   flow?: string;
   repo?: string;
   dryRun?: boolean;
+  /**
+   * 作業ツリーが、エージェントが触っていない取得したての checkout であることを示す。
+   * エージェントとは別の job で実行する場合に使う。作業ツリーへの変更や勝手なコミットは
+   * この checkout には存在しないため、それらの検査は行わない(構造的に持ち込めない)。
+   */
+  cleanWorkspace?: boolean;
+  /** エージェントが読んだコミット。省略時は作業ツリーの HEAD。別 job のときは route が渡す。 */
+  head?: string;
 }
 
 /**
@@ -68,17 +76,19 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
   };
   if (!violation && stage.mode === "read") {
     violation = check(() => {
-      const dirty = dirtyFiles(cwd).filter((f) => !f.startsWith(".taskrail/"));
-      if (dirty.length) return `読み取り専用の工程でファイルが変更されました: ${dirty.slice(0, 5).join(", ")}`;
-      // コミットしてしまえば作業ツリーはきれいに見えるため、リモートにないコミットも検出する。
+      if (!opts.cleanWorkspace) {
+        const dirty = dirtyFiles(cwd).filter((f) => !f.startsWith(".taskrail/"));
+        if (dirty.length) return `読み取り専用の工程でファイルが変更されました: ${dirty.slice(0, 5).join(", ")}`;
+      }
       const onBranch = stage.agents.some((a) => DIFF_AGENTS.has(a));
       const ref = onBranch ? resolveBranch(ctx.project.branch_prefix, issue.number, issue.title, cwd) : ctx.platform.defaultBranch();
       const sha = remoteSha(ref);
-      if (commitCountSince(sha, cwd) > 0) return "読み取り専用の工程でコミットが作られました";
+      // コミットしてしまえば作業ツリーはきれいに見えるため、リモートにないコミットも検出する。
+      if (!opts.cleanWorkspace && commitCountSince(sha, cwd) > 0) return "読み取り専用の工程でコミットが作られました";
       // 差分を見る工程では、検証した内容がブランチの先頭と同じでなければならない。
       // 古いコミットのままでも「リモートにないコミット」は 0 件になるため、一致そのものを確かめる。
       if (onBranch) {
-        const head = git(["rev-parse", "HEAD"], cwd);
+        const head = opts.head ?? git(["rev-parse", "HEAD"], cwd);
         if (head !== sha) return `検証したコミット(${head.slice(0, 7)})が ${ref} の先頭(${sha.slice(0, 7)})と違います`;
         verified = { ref, sha };
       }

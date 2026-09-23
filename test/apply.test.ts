@@ -130,6 +130,21 @@ describe("apply の強制ルール", () => {
       expect(lastComment()).toContain("検証中に");
       expect(p.getIssue(1).labels).not.toContain("flow::review");
     });
+    it("別 job で動かすとき(--clean-workspace)は、取得したての checkout を前提に検査する", () => {
+      startVerify();
+      const verifiedSha = r.sha();
+      // 取得したての checkout には、エージェントの変更もコミットも存在しない。
+      writeFileSync(join(r.dir, "a.txt"), "エージェントが触った跡\n");
+      applyWith(fakeCtx(p), { issue: "1", stage: "verify", cleanWorkspace: true, head: verifiedSha }, r.dir);
+      expect(lastComment()).toContain('"status":"pass"');
+      expect(p.getIssue(1).labels).toContain("flow::review");
+    });
+    it("別 job のときも、エージェントが読んだコミットが先頭でなければ違反にする", () => {
+      startVerify();
+      applyWith(fakeCtx(p), { issue: "1", stage: "verify", cleanWorkspace: true, head: "f".repeat(40) }, r.dir);
+      expect(lastComment()).toContain("検証したコミット");
+      expect(p.getIssue(1).labels).not.toContain("flow::review");
+    });
     it("古いコミットを検証していたら違反にする(リモートに新しい push がある)", () => {
       startVerify();
       const old = r.sha();

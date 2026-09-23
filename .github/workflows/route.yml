@@ -39,7 +39,9 @@ permissions:
   contents: read
 
 jobs:
-  route:
+  # job 1: 実行内容を決めて、エージェントを動かす。
+  # 書き込み用のトークンを使うのは、エージェントより前に動く route の step だけ。
+  agent:
     if: inputs.enabled != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -48,6 +50,14 @@ jobs:
       cancel-in-progress: false
     env:
       TASKRAIL_ENABLED: ${{ inputs.enabled }}
+    outputs:
+      run: ${{ steps.route.outputs.run }}
+      issue: ${{ steps.route.outputs.issue }}
+      stage: ${{ steps.route.outputs.stage }}
+      mode: ${{ steps.route.outputs.mode }}
+      branch: ${{ steps.route.outputs.branch }}
+      head: ${{ steps.route.outputs.head }}
+      base: ${{ steps.route.outputs.base }}
     steps:
       # GITHUB_TOKEN で付けたラベルは次のワークフローを起動しない。連鎖させるために App のトークンを使う。
       - name: App トークンを発行
@@ -157,25 +167,121 @@ jobs:
             --max-turns ${{ steps.route.outputs.max_turns }}
             --allowedTools "${{ steps.route.outputs.allowed_tools }}"
 
-      # エージェントが失敗・タイムアウトしても必ず実行し、結果の不備として Issue に記録する。
-      #
-      # 注意: エージェントは同じ job の中で Bash(と sudo)を使えるため、この step の実行環境を完全には守れない。
-      # apply を別の job に分ける対策は docs/security.md の「残っているリスク」を参照。
-      - name: apply(検証して反映する)
+      # ここから先は、エージェントが触った環境では実行しない。
+      # 結果ファイルと、エージェントが作ったコミット(bundle)だけを次の job へ渡す。
+      - name: 結果を引き渡す
         if: always() && steps.route.outputs.run == 'true'
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/handoff"
+          mkdir -p "$out"
+          cp .taskrail/run/result-*.json "$out/" 2>/dev/null || true
+          if [ "${{ steps.route.outputs.mode }}" = "write" ]; then
+            base="$(git rev-parse "origin/${{ steps.route.outputs.base }}")"
+            head="$(git rev-parse HEAD)"
+            if [ "$base" != "$head" ]; then
+              git bundle create "$out/work.bundle" "$base..HEAD" --quiet
+              echo "$head" > "$out/head"
+            fi
+          fi
+
+      - name: 結果を保存する
+        if: always() && steps.route.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskrail-run-${{ steps.route.outputs.issue }}-${{ steps.route.outputs.stage }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/handoff
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # job 2: 検証して反映する。エージェントの動いたランナーとは別の、取得したての環境で動かす。
+  # エージェントは同じ job の中で Bash と sudo を使えるため、書き込み用トークンを持つ処理を同居させない。
+  apply:
+    needs: agent
+    if: always() && needs.agent.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: taskrail-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      TASKRAIL_ENABLED: ${{ inputs.enabled }}
+    steps:
+      - name: App トークンを発行
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.TASKRAIL_APP_ID }}
+          private-key: ${{ secrets.TASKRAIL_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 対象リポジトリを取得
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app.outputs.token }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: taskrail を取得
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.taskrail_repo }}
+          ref: ${{ inputs.taskrail_ref }}
+          token: ${{ steps.app.outputs.token }}
+          path: .taskrail/src
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: taskrail をビルド
+        run: |
+          mv .taskrail/src "$RUNNER_TEMP/taskrail"
+          cd "$RUNNER_TEMP/taskrail"
+          npm ci --no-audit --no-fund
+          echo "TASKRAIL=node $RUNNER_TEMP/taskrail/dist/cli.js" >> "$GITHUB_ENV"
+          git config --global user.name "taskrail"
+          git config --global user.email "taskrail@users.noreply.github.com"
+
+      - name: 結果を受け取る
+        uses: actions/download-artifact@v4
+        with:
+          name: taskrail-run-${{ needs.agent.outputs.issue }}-${{ needs.agent.outputs.stage }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/handoff
+
+      - name: 結果とコミットを置く
+        run: |
+          set -eu
+          mkdir -p .taskrail/run
+          cp "$RUNNER_TEMP/handoff"/result-*.json .taskrail/run/ 2>/dev/null || true
+          bundle="$RUNNER_TEMP/handoff/work.bundle"
+          if [ -f "$bundle" ]; then
+            # bundle の中身は「エージェントが作ったコミット」。検査は apply が改めて行う。
+            git bundle verify "$bundle"
+            git fetch --no-tags "$bundle" "HEAD:refs/taskrail/handoff"
+            git checkout -q -B "${{ needs.agent.outputs.branch }}" refs/taskrail/handoff
+          elif [ -n "${{ needs.agent.outputs.branch }}" ]; then
+            git checkout -q -B "${{ needs.agent.outputs.branch }}" "origin/${{ needs.agent.outputs.branch }}" 2>/dev/null \
+              || git checkout -q -B "${{ needs.agent.outputs.branch }}" "origin/${{ needs.agent.outputs.base }}"
+          fi
+
+      - name: apply(検証して反映する)
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           TASKRAIL_CONFIG: ${{ inputs.config }}
           TASKRAIL_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
-          # エージェントが書き換えられるグローバル設定・システム設定を読まない
+          TASKRAIL_GIT_REMOTE: ${{ github.server_url }}/${{ github.repository }}.git
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_NOSYSTEM: "1"
-          # claude-code-action が origin の URL をエージェント用トークン入りに書き換えるため、push 先は URL で直接渡す。
-          TASKRAIL_GIT_REMOTE: ${{ github.server_url }}/${{ github.repository }}.git
-          # git の認証はこの step の間だけ、この環境変数から与える(リポジトリの credential.helper は無効にする)。
           GIT_CONFIG_COUNT: "2"
           GIT_CONFIG_KEY_0: credential.helper
           GIT_CONFIG_VALUE_0: ""
           GIT_CONFIG_KEY_1: credential.helper
           GIT_CONFIG_VALUE_1: '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
-        run: $TASKRAIL apply --issue "${{ steps.route.outputs.issue }}" --stage "${{ steps.route.outputs.stage }}"
+        run: |
+          $TASKRAIL apply \
+            --issue "${{ needs.agent.outputs.issue }}" \
+            --stage "${{ needs.agent.outputs.stage }}" \
+            --clean-workspace \
+            ${{ needs.agent.outputs.head && format('--head {0}', needs.agent.outputs.head) || '' }}
