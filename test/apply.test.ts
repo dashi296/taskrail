@@ -145,6 +145,12 @@ describe("apply の強制ルール", () => {
       expect(lastComment()).toContain("検証したコミット");
       expect(p.getIssue(1).labels).not.toContain("flow::review");
     });
+    it("受け渡しに失敗していたら(--handoff-error)、結果が pass でも違反にする", () => {
+      startVerify();
+      applyWith(fakeCtx(p), { issue: "1", stage: "verify", cleanWorkspace: true, head: r.sha(), handoffError: "コミット(git bundle)を取り込めませんでした" }, r.dir);
+      expect(lastComment()).toContain("git bundle");
+      expect(p.getIssue(1).labels).not.toContain("flow::review");
+    });
     it("別 job で、エージェントが読んだコミットが渡されなければ違反にする(取得したての HEAD は常に先頭と一致するため)", () => {
       startVerify();
       applyWith(fakeCtx(p), { issue: "1", stage: "verify", cleanWorkspace: true }, r.dir);

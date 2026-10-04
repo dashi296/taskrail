@@ -75,6 +75,7 @@ common(program
   .requiredOption("--stage <id>")
   .option("--clean-workspace", "作業ツリーがエージェントの触っていない checkout であることを示す(apply を別 job で動かす場合)")
   .option("--head <sha>", "エージェントが読んだコミット(別 job のときに route から渡す)")
+  .option("--handoff-error <reason>", "エージェントの job からの受け渡しに失敗した理由(違反として記録する)")
   .option("--dry-run", "書き込まず、投稿するコメントを表示する")).action(apply);
 
 common(program

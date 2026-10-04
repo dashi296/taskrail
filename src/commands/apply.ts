@@ -22,6 +22,8 @@ export interface ApplyOptions {
   cleanWorkspace?: boolean;
   /** エージェントが読んだコミット。省略時は作業ツリーの HEAD。別 job のときは route が渡す。 */
   head?: string;
+  /** エージェントの job からの受け渡し(結果ファイルとコミット)に失敗した理由。あれば違反として記録する。 */
+  handoffError?: string;
 }
 
 /**
@@ -55,7 +57,7 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
   }
 
   // 2. 強制ルール。エージェントがルールを忘れていても、ここで止める。
-  let violation: string | null = errors[0] ?? null;
+  let violation: string | null = opts.handoffError ? `エージェントの job からの受け渡しに失敗しました: ${opts.handoffError}` : (errors[0] ?? null);
   let prUrl: string | undefined;
   /** 差分を読む工程で、実際に検証したブランチとコミット。 */
   let verified: { ref: string; sha: string } | null = null;

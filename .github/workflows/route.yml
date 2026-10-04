@@ -258,7 +258,9 @@ jobs:
           path: ${{ runner.temp }}/handoff
 
       # job の outputs はシェルに直接展開しない(既存のリモートブランチ名には $ や ; を含められる)。
+      # 受け取りに失敗しても step は止めない(止めると apply が記録を残せない)。理由は apply に違反として渡す。
       - name: 結果とコミットを置く
+        id: place
         env:
           MODE: ${{ needs.agent.outputs.mode }}
           BRANCH: ${{ needs.agent.outputs.branch }}
@@ -269,11 +271,21 @@ jobs:
           cp "$RUNNER_TEMP/handoff"/result-*.json .taskrail/run/ 2>/dev/null || true
           bundle="$RUNNER_TEMP/handoff/work.bundle"
           # bundle を受け取るのは書き込み工程だけ。読み取り工程は、エージェントのコミットを持ち込まない。
-          if [ "$MODE" = "write" ] && [ -f "$bundle" ]; then
-            # bundle の中身は「エージェントが作ったコミット」。検査は apply が改めて行う。
-            git bundle verify "$bundle"
-            git fetch --no-tags "$bundle" "HEAD:refs/taskrail/handoff"
-            git checkout -q -B "$BRANCH" refs/taskrail/handoff
+          if [ "$MODE" = "write" ]; then
+            # bundle がないのは「既定ブランチから新しいコミットがない」とき。既存の作業ブランチで代用すると、
+            # 前回までのコミットで「コミットがある」と判定してしまうため、既定ブランチの先頭を置く。
+            git checkout -q -f -B "$BRANCH" "origin/$BASE"
+            if [ -f "$bundle" ]; then
+              # bundle の中身は「エージェントが作ったコミット」。検査は apply が改めて行う。
+              if git bundle verify -q "$bundle" >/dev/null 2>&1 \
+                && git fetch -q --no-tags "$bundle" "HEAD:refs/taskrail/handoff" \
+                && git checkout -q -f -B "$BRANCH" refs/taskrail/handoff; then
+                :
+              else
+                git checkout -q -f -B "$BRANCH" "origin/$BASE"
+                echo "error=コミット(git bundle)を取り込めませんでした" >> "$GITHUB_OUTPUT"
+              fi
+            fi
           elif [ -n "$BRANCH" ]; then
             git checkout -q -B "$BRANCH" "origin/$BRANCH" 2>/dev/null \
               || git checkout -q -B "$BRANCH" "origin/$BASE"
@@ -295,4 +307,7 @@ jobs:
           ISSUE: ${{ needs.agent.outputs.issue }}
           STAGE: ${{ needs.agent.outputs.stage }}
           HEAD_SHA: ${{ needs.agent.outputs.head }}
-        run: $TASKRAIL apply --issue "$ISSUE" --stage "$STAGE" --clean-workspace ${HEAD_SHA:+--head "$HEAD_SHA"}
+          HANDOFF_ERROR: ${{ steps.place.outputs.error }}
+        run: >-
+          $TASKRAIL apply --issue "$ISSUE" --stage "$STAGE" --clean-workspace
+          ${HEAD_SHA:+--head "$HEAD_SHA"} ${HANDOFF_ERROR:+--handoff-error "$HANDOFF_ERROR"}
