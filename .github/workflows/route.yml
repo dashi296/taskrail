@@ -50,10 +50,11 @@ jobs:
       cancel-in-progress: false
     env:
       TASKRAIL_ENABLED: ${{ inputs.enabled }}
+    # job の outputs は job の終了時に同じ VM で評価されるため、書き込み工程のエージェントは書き換えられる。
+    # apply は対象の Issue と工程をイベントから決め、ここからは受け取らない。残りの値は未信頼として扱う
+    # (誤っていれば apply の検査で止まる。head の扱いは docs/security.md を参照)。
     outputs:
       run: ${{ steps.route.outputs.run }}
-      issue: ${{ steps.route.outputs.issue }}
-      stage: ${{ steps.route.outputs.stage }}
       mode: ${{ steps.route.outputs.mode }}
       branch: ${{ steps.route.outputs.branch }}
       head: ${{ steps.route.outputs.head }}
@@ -129,7 +130,7 @@ jobs:
           GIT_CONFIG_VALUE_1: '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
         run: $TASKRAIL route --event "$GITHUB_EVENT_PATH"
 
-      # 受け渡しの artifact 名は、エージェントより前に決めて job の outputs で渡す。
+      # 受け渡しの artifact 名は、ここで決めて job の outputs で渡す。
       # run_attempt を含めるため、失敗した job だけを再実行しても、apply は前回の名前で受け取れる。
       - name: artifact 名を決める
         id: artifact
@@ -191,6 +192,8 @@ jobs:
           mkdir -p "$out"
           # 結果ファイルがなくても artifact を作る(ないと次の job が受け取りに失敗し、apply が記録を残せない)。
           echo "$GITHUB_RUN_ID" > "$out/handoff.txt"
+          # 途中で失敗したら、その旨を apply に伝える(記録される理由が実際の原因とずれないように)。
+          trap '[ $? -eq 0 ] || echo "結果とコミットを引き渡せませんでした" > "$out/error.txt"' EXIT
           cp .taskrail/run/result-*.json "$out/" 2>/dev/null || true
           if [ "$MODE" = "write" ]; then
             base="$(git rev-parse "origin/$BASE")"
@@ -280,6 +283,8 @@ jobs:
           BASE: ${{ needs.agent.outputs.base }}
         run: |
           set -eu
+          # 中身はエージェントが書き換えうるので読まない。あるかどうかだけを見る。
+          if [ -e "$RUNNER_TEMP/handoff/error.txt" ]; then echo "error=結果とコミットを引き渡せませんでした" >> "$GITHUB_OUTPUT"; fi
           bundle="$RUNNER_TEMP/handoff/work.bundle"
           # bundle を受け取るのは書き込み工程だけ。読み取り工程は、エージェントのコミットを持ち込まない。
           if [ "$MODE" = "write" ]; then
@@ -320,8 +325,6 @@ jobs:
           GIT_CONFIG_VALUE_0: ""
           GIT_CONFIG_KEY_1: credential.helper
           GIT_CONFIG_VALUE_1: '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
-          ISSUE: ${{ needs.agent.outputs.issue }}
-          STAGE: ${{ needs.agent.outputs.stage }}
           HEAD_SHA: ${{ needs.agent.outputs.head }}
           # continue-on-error の step は conclusion が success になるため、outcome で判定する。
           HANDOFF_ERROR: >-
@@ -329,5 +332,5 @@ jobs:
             || steps.place.outcome != 'success' && '結果とコミットを置けませんでした'
             || steps.place.outputs.error }}
         run: >-
-          $TASKRAIL apply --issue "$ISSUE" --stage "$STAGE" --clean-workspace
+          $TASKRAIL apply --event "$GITHUB_EVENT_PATH" --clean-workspace
           ${HEAD_SHA:+--head "$HEAD_SHA"} ${HANDOFF_ERROR:+--handoff-error "$HANDOFF_ERROR"}

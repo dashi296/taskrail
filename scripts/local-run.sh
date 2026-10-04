@@ -90,7 +90,9 @@ if [ -n "$(get agent_2)" ]; then
   if [ "$status" = "pass" ]; then run_agent "$(get prompt_2)" 2; fi
 fi
 
-GITHUB_OUTPUT="$out" "${taskrail[@]}" apply --issue "$issue" --stage "$stage" ${DRY_RUN:+--dry-run}
+# route がエージェントに渡したコミット。書き込み工程では、作業がここから積まれていることを apply が確かめる。
+head="$(get head)"
+GITHUB_OUTPUT="$out" "${taskrail[@]}" apply --issue "$issue" --stage "$stage" ${head:+--head "$head"} ${DRY_RUN:+--dry-run}
 
 # 実装・検証の工程では route が作業ブランチへ切り替えている。元のブランチに戻す。
 if [ "$(git rev-parse --abbrev-ref HEAD)" != "$orig" ]; then

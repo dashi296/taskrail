@@ -147,6 +147,29 @@ describe("apply の強制ルール", () => {
       expect(lastComment()).toContain("検証したコミット");
       expect(p.getIssue(1).labels).not.toContain("flow::review");
     });
+    it("別 job では、対象の Issue と工程をイベントから決める(エージェントの job の出力は書き換えられうる)", () => {
+      startVerify();
+      const event = join(r.dir, "..", "event.json");
+      writeFileSync(event, JSON.stringify({ issue: { number: 1 }, label: { name: "flow::verify" } }));
+      applyWith(fakeCtx(p), { event, cleanWorkspace: true, head: r.sha() }, r.dir);
+      expect(lastComment()).toContain('"status":"pass"');
+      expect(p.getIssue(1).labels).toContain("flow::review");
+    });
+    it("イベントと食い違う Issue や工程が指定されたら、何も書き込まずに止める", () => {
+      startVerify();
+      const before = p.listComments(1).length;
+      const event = join(r.dir, "..", "event.json");
+      writeFileSync(event, JSON.stringify({ issue: { number: 1 }, label: { name: "flow::verify" } }));
+      expect(() => applyWith(fakeCtx(p), { event, issue: "2", stage: "verify", cleanWorkspace: true, head: r.sha() }, r.dir)).toThrow("イベント");
+      expect(() => applyWith(fakeCtx(p), { event, issue: "1", stage: "spec", cleanWorkspace: true, head: r.sha() }, r.dir)).toThrow("イベント");
+      expect(p.listComments(1)).toHaveLength(before);
+    });
+    it("--head が SHA の形でなければ違反にする", () => {
+      startVerify();
+      applyWith(fakeCtx(p), { issue: "1", stage: "verify", cleanWorkspace: true, head: "HEAD" }, r.dir);
+      expect(lastComment()).toContain("--head");
+      expect(p.getIssue(1).labels).not.toContain("flow::review");
+    });
     it("受け渡しに失敗していたら(--handoff-error)、結果が pass でも違反にする", () => {
       startVerify();
       applyWith(fakeCtx(p), { issue: "1", stage: "verify", cleanWorkspace: true, head: r.sha(), handoffError: "コミット(git bundle)を取り込めませんでした" }, r.dir);
@@ -260,6 +283,13 @@ describe("apply の強制ルール", () => {
       expect(lastComment()).toContain("開始時のコミット");
       expect(p.createdPullRequests).toHaveLength(0);
       expect(execFileSync("git", ["ls-remote", "origin", branch()], { cwd: r.dir, encoding: "utf8" })).toBe("");
+    });
+    it("別 job で、開始時のコミット(--head)が渡されなければ push しない", () => {
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      applyWith(fakeCtx(p), { issue: "1", stage: "doing", cleanWorkspace: true }, r.dir);
+      expect(lastComment()).toContain("--head");
+      expect(p.createdPullRequests).toHaveLength(0);
     });
     it("開始時のコミット(--head)の子孫なら push する", () => {
       const start = r.sha();

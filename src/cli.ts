@@ -71,10 +71,11 @@ common(program
 common(program
   .command("apply")
   .description("エージェントの結果を検証し、コメント・PR/MR作成・列の移動を行う")
-  .requiredOption("--issue <n>")
-  .requiredOption("--stage <id>")
+  .option("--issue <n>")
+  .option("--stage <id>")
+  .option("--event <path>", "イベントのJSON。対象の Issue と工程をここから決める(別 job で動かす場合)")
   .option("--clean-workspace", "作業ツリーがエージェントの触っていない checkout であることを示す(apply を別 job で動かす場合)")
-  .option("--head <sha>", "エージェントが読んだコミット(別 job のときに route から渡す)")
+  .option("--head <sha>", "route がエージェントに渡したコミット(別 job のときに route の出力から渡す)")
   .option("--handoff-error <reason>", "エージェントの job からの受け渡しに失敗した理由(違反として記録する)")
   .option("--dry-run", "書き込まず、投稿するコメントを表示する")).action(apply);
 

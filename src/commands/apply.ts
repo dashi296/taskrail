@@ -1,16 +1,22 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { packageVersion, protectedPaths } from "../core/config.js";
 import type { Issue } from "../adapters/types.js";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
-import { currentStage, decide, getStage, sizeOf } from "../core/flow.js";
+import { currentStage, decide, getStage, sizeOf, stageFromLabel } from "../core/flow.js";
 import { commitCountSince, dirtyFiles, fetchCommit, git, protectedChanges, pushCommit, resolveBranch, tryGit } from "../core/git.js";
 import { countRework, parseRuns, renderComment, type RunRecord } from "../core/record.js";
 import { type AgentResult, combineStatus, readResult } from "../core/result.js";
 import { DIFF_AGENTS, RUN_DIR } from "./route.js";
 
 export interface ApplyOptions {
-  issue: string;
-  stage: string;
+  issue?: string;
+  stage?: string;
+  /**
+   * イベントの JSON(GitHub では $GITHUB_EVENT_PATH)。対象の Issue と工程をここから決める。
+   * 別 job で動かすときに使う。エージェントの job の出力は、同じ VM のエージェントが書き換えられるため信頼しない。
+   */
+  event?: string;
   flow?: string;
   repo?: string;
   dryRun?: boolean;
@@ -21,9 +27,11 @@ export interface ApplyOptions {
    */
   cleanWorkspace?: boolean;
   /**
-   * route がエージェントに渡したコミット(エージェントより前に記録する)。別 job のときは route が渡す。
+   * route がエージェントに渡したコミット。別 job のときは route の出力から渡す(--clean-workspace では必須)。
    * 差分を読む工程では、検証した内容がブランチの先頭かの判定に使う(省略時は作業ツリーの HEAD)。
    * 書き込み工程では、作業がこのコミットから積まれていることを確かめる。
+   * 読み取り工程のエージェントは Bash を持たないため、この値を書き換えられない。書き込み工程では書き換えられうる
+   * (同じ VM で sudo を使えるため)ので、その場合は整合の確認にとどまる(docs/security.md)。
    */
   head?: string;
   /** エージェントの job からの受け渡し(結果ファイルとコミット)に失敗した理由。あれば違反として記録する。 */
@@ -41,8 +49,9 @@ export function apply(opts: ApplyOptions): void {
 
 /** apply の本体。テストから Ctx と作業ディレクトリを与えられるように分けてある。 */
 export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): void {
-  const stage = getStage(ctx.flow, opts.stage);
-  const issue = ctx.platform.getIssue(Number(opts.issue));
+  const target = resolveTarget(ctx, opts);
+  const stage = getStage(ctx.flow, target.stage);
+  const issue = ctx.platform.getIssue(target.issue);
   // エージェントの実行中に人間が列を戻す・閉じるなどした場合、古い実行の結果で上書きしない。
   const stale = staleReason(ctx, issue, stage.id);
   if (stale) return log(`#${issue.number}: ${stale}。この実行の結果は反映しません`);
@@ -61,7 +70,8 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
   }
 
   // 2. 強制ルール。エージェントがルールを忘れていても、ここで止める。
-  let violation: string | null = opts.handoffError ? `エージェントの job からの受け渡しに失敗しました: ${opts.handoffError}` : (errors[0] ?? null);
+  const headError = opts.head !== undefined && !/^[0-9a-f]{40,64}$/.test(opts.head) ? `--head が SHA の形ではありません: ${opts.head.slice(0, 80)}` : null;
+  let violation: string | null = headError ?? (opts.handoffError ? `エージェントの job からの受け渡しに失敗しました: ${opts.handoffError}` : (errors[0] ?? null));
   let prUrl: string | undefined;
   /** 差分を読む工程で、実際に検証したブランチとコミット。 */
   let verified: { ref: string; sha: string } | null = null;
@@ -108,8 +118,10 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
     violation = check(() => {
       // 検査する木を固定する。以降の push と記録は、この SHA に対してのみ行う。
       head = git(["rev-parse", "HEAD"], cwd);
-      // 作業は route が用意した開始点から積んだものでなければならない。古いコミットから作り直すと、
-      // 保護パスの検査(merge-base との比較)では、既定ブランチに後から入った変更を消したことが見えない。
+      // 作業は route が用意した開始点から積んだものでなければならない。古いコミットから積み直すと、
+      // 保護パスの検査(merge-base との比較)には現れないまま、既定ブランチで後から直したワークフロー定義などが
+      // 作業ブランチでは古いまま残る(push のイベントは、push されたコミットの定義で動く)。
+      if (opts.cleanWorkspace && !opts.head) return "--clean-workspace では、作業の開始時のコミットを --head で渡してください";
       if (opts.head && tryGit(["merge-base", "--is-ancestor", opts.head, head], cwd) === null) {
         return `作業の開始時のコミット(${opts.head.slice(0, 7)})から積まれていません`;
       }
@@ -181,6 +193,24 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
 
   log(`#${issue.number} ${stage.id}: ${rec.status} → ${decision.to ?? "(移動なし)"}${decision.addBlocked ? " [blocked]" : ""}`);
   setOutputs({ status: rec.status, to: decision.to ?? "", blocked: decision.addBlocked });
+}
+
+/**
+ * 対象の Issue と工程。--event があればイベントから決め、--issue / --stage はそれと一致するときだけ認める
+ * (食い違いは、どちらかが改ざんされている。何も書き込まずに止める)。
+ */
+export function resolveTarget(ctx: Ctx, opts: Pick<ApplyOptions, "issue" | "stage" | "event">): { issue: number; stage: string } {
+  if (!opts.event) {
+    if (!opts.issue || !opts.stage) throw new Error("--issue と --stage、または --event を指定してください");
+    return { issue: Number(opts.issue), stage: opts.stage };
+  }
+  const ev = JSON.parse(readFileSync(opts.event, "utf8")) as { issue?: { number?: number }; label?: { name?: string } };
+  const issue = ev.issue?.number;
+  const stage = ev.label?.name ? stageFromLabel(ctx.flow, ev.label.name)?.id : undefined;
+  if (!issue || !stage) throw new Error("イベントから対象の Issue と工程を決められません");
+  if (opts.issue !== undefined && Number(opts.issue) !== issue) throw new Error(`--issue ${opts.issue} がイベントの Issue(#${issue})と違います`);
+  if (opts.stage !== undefined && opts.stage !== stage) throw new Error(`--stage ${opts.stage} がイベントの工程(${stage})と違います`);
+  return { issue, stage };
 }
 
 /** この実行の結果を反映してよい状態でなければ、その理由。 */
