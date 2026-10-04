@@ -145,6 +145,12 @@ describe("apply の強制ルール", () => {
       expect(lastComment()).toContain("検証したコミット");
       expect(p.getIssue(1).labels).not.toContain("flow::review");
     });
+    it("別 job で、エージェントが読んだコミットが渡されなければ違反にする(取得したての HEAD は常に先頭と一致するため)", () => {
+      startVerify();
+      applyWith(fakeCtx(p), { issue: "1", stage: "verify", cleanWorkspace: true }, r.dir);
+      expect(lastComment()).toContain("--head");
+      expect(p.getIssue(1).labels).not.toContain("flow::review");
+    });
     it("古いコミットを検証していたら違反にする(リモートに新しい push がある)", () => {
       startVerify();
       const old = r.sha();

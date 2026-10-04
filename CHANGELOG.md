@@ -21,6 +21,8 @@
 - `--local-checks` は渡す環境変数を許可リストに絞り(追加は `TASKRAIL_CHECK_ENV`)、HOME を使い捨てにし、ASKPASS を無効にする
 - `--local-checks` は checkout で実行される設定(`filter.*.smudge` / `.process`)があれば検査しない
 - apply をエージェントとは別の job で実行する。結果ファイルとコミット(git bundle)だけを受け渡し、取得したての環境で検査する
+  - 書き込み工程で、エージェントがコミットしなかった変更は受け渡さない(これまでは「コミットされていない変更があります」として止めていた)。コミット済みの内容だけを検査して push する
+  - 入口のワークフロー(`taskrail.yml`)の route job に concurrency を足した。導入済みのリポジトリは、`taskrail init --ci --force` で置き直すか、同じ concurrency を手で足す(`update` はタグだけを書き換える)
 - エージェントの認証は `ANTHROPIC_API_KEY` と `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token`)のどちらでもよい
 - 修正: App が動かした列でエージェントが起動しない問題。route が `allowed_bots` を出力し、claude-code-action に渡す
 - 導入先に置くファイルを最小限にした。`init` は既定でリポジトリに何も置かない(ローカル実行専用)。`--ci` で自動実行の入口のワークフローを、`--docs` `--issue-template` `--config` で任意のファイルを置く

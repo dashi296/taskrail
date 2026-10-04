@@ -88,6 +88,8 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
       // 差分を見る工程では、検証した内容がブランチの先頭と同じでなければならない。
       // 古いコミットのままでも「リモートにないコミット」は 0 件になるため、一致そのものを確かめる。
       if (onBranch) {
+        // 取得したての checkout の HEAD はリモートの先頭そのものなので、比べても古さを検出できない。
+        if (opts.cleanWorkspace && !opts.head) return "--clean-workspace では、エージェントが読んだコミットを --head で渡してください";
         const head = opts.head ?? git(["rev-parse", "HEAD"], cwd);
         if (head !== sha) return `検証したコミット(${head.slice(0, 7)})が ${ref} の先頭(${sha.slice(0, 7)})と違います`;
         verified = { ref, sha };
