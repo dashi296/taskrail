@@ -115,7 +115,7 @@ protected_paths: [".github/**", "taskrail.yml", "CODEOWNERS", "db/migrations/**"
 wip_limit: 2
 ```
 
-`protected_paths` に何を書いても、ルール文書(`**/CLAUDE.md`、`**/CLAUDE.local.md`、`**/AGENTS.md`、`docs/constitution.md`)、エージェントの設定(`.claude/**`、`.mcp.json`)、CI の定義(`.github/workflows/**`、`.github/actions/**`、`.gitlab-ci.yml`、`.gitlab/ci/**`)、`taskrail.yml` は常に保護されます。
+`protected_paths` に何を書いても、ルール文書(`**/CLAUDE.md`、`**/CLAUDE.local.md`、`**/AGENTS.md`、`docs/constitution.md`)、エージェントの設定(`.claude/**`、`.mcp.json`)、CI の定義(`.github/workflows/**`、`.github/actions/**`、`.gitlab-ci.yml`、`.gitlab/ci/**`)、`taskrail.yml`、結果ファイルの置き場所(`.taskrail/**`)は常に保護されます。
 `bot_logins`(Issue コメント内の記録を信頼する投稿者)は、Actions では GitHub App から自動で決まります。
 設定をリポジトリ変数に置くと、変更は PR レビューを通りません。レビューで管理したい場合は `--config` で `taskrail.yml` を置きます。
 

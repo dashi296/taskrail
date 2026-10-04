@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applyWith } from "../src/commands/apply.js";
-import { branchName } from "../src/core/git.js";
+import { branchName, excludeTaskrailDir } from "../src/core/git.js";
 import { FakePlatform, fakeCtx } from "./fakes.js";
 
 /** origin(bare)と作業ツリーを持つリポジトリ。apply は API の SHA を基準にするため、実物の remote が要る。 */
@@ -22,6 +22,8 @@ function repo(): { dir: string; origin: string; git: (...args: string[]) => stri
   git("add", "-A");
   git("commit", "-qm", "base");
   git("push", "-q", "-u", "origin", "main");
+  // route と同じく、結果ファイルの置き場所はコミット対象から外す(git add -A で拾わないように)。
+  excludeTaskrailDir(work);
   return { dir: work, origin, git, sha: () => git("rev-parse", "HEAD") };
 }
 
@@ -241,6 +243,39 @@ describe("apply の強制ルール", () => {
       writeFileSync(join(r.dir, "src/button.ts"), "export const x = 2;\n");
       run();
       expect(lastComment()).toContain("コミットされていない変更があります");
+      expect(p.createdPullRequests).toHaveLength(0);
+    });
+    it("エージェントが開始時のコミット(--head)から分岐していなければ push しない", () => {
+      // 既定ブランチに後から入った変更(例: 保護パスの修正)を、古いコミットから作り直して消すのを防ぐ。
+      const old = r.sha();
+      writeFileSync(join(r.dir, "a.txt"), "既定ブランチの新しい変更\n");
+      r.git("commit", "-qam", "既定ブランチを進める");
+      r.git("push", "-q", "origin", "main");
+      const start = r.sha();
+      p.heads.set("main", start);
+      r.git("checkout", "-q", old);
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      applyWith(fakeCtx(p), { issue: "1", stage: "doing", cleanWorkspace: true, head: start }, r.dir);
+      expect(lastComment()).toContain("開始時のコミット");
+      expect(p.createdPullRequests).toHaveLength(0);
+      expect(execFileSync("git", ["ls-remote", "origin", branch()], { cwd: r.dir, encoding: "utf8" })).toBe("");
+    });
+    it("開始時のコミット(--head)の子孫なら push する", () => {
+      const start = r.sha();
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      commitAll();
+      applyWith(fakeCtx(p), { issue: "1", stage: "doing", cleanWorkspace: true, head: start }, r.dir);
+      expect(p.createdPullRequests).toHaveLength(1);
+    });
+    it("結果ファイルの置き場所(.taskrail/)をコミットしていたら push しない(後続の工程が偽の結果を読まないように)", () => {
+      startWork({ "src/button.ts": "export const x = 1;\n" });
+      mkdirSync(join(r.dir, ".taskrail/run"), { recursive: true });
+      writeFileSync(join(r.dir, ".taskrail/run/result-code-review.json"), "{}");
+      r.git("add", "-f", ".taskrail/run/result-code-review.json");
+      commitAll();
+      run();
+      expect(lastComment()).toContain("保護対象のファイルが変更されました");
       expect(p.createdPullRequests).toHaveLength(0);
     });
     it("pass と報告されてもコミットがなければ止める", () => {

@@ -58,6 +58,7 @@ jobs:
       branch: ${{ steps.route.outputs.branch }}
       head: ${{ steps.route.outputs.head }}
       base: ${{ steps.route.outputs.base }}
+      artifact: ${{ steps.artifact.outputs.name }}
     steps:
       # GITHUB_TOKEN で付けたラベルは次のワークフローを起動しない。連鎖させるために App のトークンを使う。
       - name: App トークンを発行
@@ -69,7 +70,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       # エージェントに渡す読み取り専用のトークン。エージェントは Issue・ラベル・PR に書き込めず、push もできない。
-      # 書き込み用のトークン(steps.app)は route と apply の step の env にだけ渡す。
+      # 書き込み用のトークン(steps.app)は route の step の env にだけ渡す。
       - name: エージェント用の読み取り専用トークンを発行
         id: agent_token
         uses: actions/create-github-app-token@v1
@@ -127,6 +128,16 @@ jobs:
           GIT_CONFIG_KEY_1: credential.helper
           GIT_CONFIG_VALUE_1: '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
         run: $TASKRAIL route --event "$GITHUB_EVENT_PATH"
+
+      # 受け渡しの artifact 名は、エージェントより前に決めて job の outputs で渡す。
+      # run_attempt を含めるため、失敗した job だけを再実行しても、apply は前回の名前で受け取れる。
+      - name: artifact 名を決める
+        id: artifact
+        if: steps.route.outputs.run == 'true'
+        env:
+          ISSUE: ${{ steps.route.outputs.issue }}
+          STAGE: ${{ steps.route.outputs.stage }}
+        run: echo "name=taskrail-run-$ISSUE-$STAGE-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: エージェント 1
         if: steps.route.outputs.run == 'true'
@@ -186,7 +197,6 @@ jobs:
             head="$(git rev-parse HEAD)"
             if [ "$base" != "$head" ]; then
               git bundle create "$out/work.bundle" "$base..HEAD" --quiet
-              echo "$head" > "$out/head"
             fi
           fi
 
@@ -194,7 +204,7 @@ jobs:
         if: always() && steps.route.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: taskrail-run-${{ steps.route.outputs.issue }}-${{ steps.route.outputs.stage }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.artifact.outputs.name }}
           path: ${{ runner.temp }}/handoff
           retention-days: 1
           if-no-files-found: ignore
@@ -250,15 +260,18 @@ jobs:
           git config --global user.email "taskrail@users.noreply.github.com"
 
       # エージェントの job が壊れて artifact がなくても apply は動かし、結果の不備として記録させる。
+      # 名前が空のまま渡すと、この実行のすべての artifact を受け取ってしまうため、空なら受け取らない。
       - name: 結果を受け取る
+        id: download
+        if: needs.agent.outputs.artifact != ''
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: taskrail-run-${{ needs.agent.outputs.issue }}-${{ needs.agent.outputs.stage }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.agent.outputs.artifact }}
           path: ${{ runner.temp }}/handoff
 
       # job の outputs はシェルに直接展開しない(既存のリモートブランチ名には $ や ; を含められる)。
-      # 受け取りに失敗しても step は止めない(止めると apply が記録を残せない)。理由は apply に違反として渡す。
+      # 受け取りや配置に失敗しても apply は動かし、理由を違反として記録させる(止めると Issue に何も残らない)。
       - name: 結果とコミットを置く
         id: place
         env:
@@ -267,8 +280,6 @@ jobs:
           BASE: ${{ needs.agent.outputs.base }}
         run: |
           set -eu
-          mkdir -p .taskrail/run
-          cp "$RUNNER_TEMP/handoff"/result-*.json .taskrail/run/ 2>/dev/null || true
           bundle="$RUNNER_TEMP/handoff/work.bundle"
           # bundle を受け取るのは書き込み工程だけ。読み取り工程は、エージェントのコミットを持ち込まない。
           if [ "$MODE" = "write" ]; then
@@ -287,11 +298,16 @@ jobs:
               fi
             fi
           elif [ -n "$BRANCH" ]; then
-            git checkout -q -B "$BRANCH" "origin/$BRANCH" 2>/dev/null \
-              || git checkout -q -B "$BRANCH" "origin/$BASE"
+            git checkout -q -f -B "$BRANCH" "origin/$BRANCH" 2>/dev/null \
+              || git checkout -q -f -B "$BRANCH" "origin/$BASE"
           fi
+          # 結果ファイルは、受け取った artifact のものだけを使う。checkout したコミットに含まれていても読まない。
+          rm -rf .taskrail/run
+          mkdir -p .taskrail/run
+          cp "$RUNNER_TEMP/handoff"/result-*.json .taskrail/run/ 2>/dev/null || true
 
       - name: apply(検証して反映する)
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           TASKRAIL_CONFIG: ${{ inputs.config }}
@@ -307,7 +323,11 @@ jobs:
           ISSUE: ${{ needs.agent.outputs.issue }}
           STAGE: ${{ needs.agent.outputs.stage }}
           HEAD_SHA: ${{ needs.agent.outputs.head }}
-          HANDOFF_ERROR: ${{ steps.place.outputs.error }}
+          # continue-on-error の step は conclusion が success になるため、outcome で判定する。
+          HANDOFF_ERROR: >-
+            ${{ steps.download.outcome != 'success' && '結果(artifact)を受け取れませんでした'
+            || steps.place.outcome != 'success' && '結果とコミットを置けませんでした'
+            || steps.place.outputs.error }}
         run: >-
           $TASKRAIL apply --issue "$ISSUE" --stage "$STAGE" --clean-workspace
           ${HEAD_SHA:+--head "$HEAD_SHA"} ${HANDOFF_ERROR:+--handoff-error "$HANDOFF_ERROR"}

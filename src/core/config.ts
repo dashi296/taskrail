@@ -79,10 +79,11 @@ export type Project = z.infer<typeof ProjectSchema>;
  * - ルール文書: 後続の工程(検証など)が改変された指示を読む
  * - エージェントの設定(.claude/、.mcp.json): hook や MCP サーバーとして、後続の工程で任意のコマンドが実行される
  * - CI の定義: 作業ブランチの PR で、リポジトリの Secrets を持って実行される
- * - taskrail の設定
+ * - taskrail の設定と、結果ファイルの置き場所(コミットしておくと、後続の工程が偽の結果を読みうる)
  */
 export const ENFORCED_PROTECTED_PATHS = [
   "taskrail.yml",
+  ".taskrail/**",
   "**/CLAUDE.md",
   "**/CLAUDE.local.md",
   "**/AGENTS.md",

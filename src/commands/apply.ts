@@ -3,7 +3,7 @@ import { packageVersion, protectedPaths } from "../core/config.js";
 import type { Issue } from "../adapters/types.js";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { currentStage, decide, getStage, sizeOf } from "../core/flow.js";
-import { commitCountSince, dirtyFiles, fetchCommit, git, protectedChanges, pushCommit, resolveBranch } from "../core/git.js";
+import { commitCountSince, dirtyFiles, fetchCommit, git, protectedChanges, pushCommit, resolveBranch, tryGit } from "../core/git.js";
 import { countRework, parseRuns, renderComment, type RunRecord } from "../core/record.js";
 import { type AgentResult, combineStatus, readResult } from "../core/result.js";
 import { DIFF_AGENTS, RUN_DIR } from "./route.js";
@@ -20,7 +20,11 @@ export interface ApplyOptions {
    * この checkout には存在しないため、それらの検査は行わない(構造的に持ち込めない)。
    */
   cleanWorkspace?: boolean;
-  /** エージェントが読んだコミット。省略時は作業ツリーの HEAD。別 job のときは route が渡す。 */
+  /**
+   * route がエージェントに渡したコミット(エージェントより前に記録する)。別 job のときは route が渡す。
+   * 差分を読む工程では、検証した内容がブランチの先頭かの判定に使う(省略時は作業ツリーの HEAD)。
+   * 書き込み工程では、作業がこのコミットから積まれていることを確かめる。
+   */
   head?: string;
   /** エージェントの job からの受け渡し(結果ファイルとコミット)に失敗した理由。あれば違反として記録する。 */
   handoffError?: string;
@@ -104,6 +108,11 @@ export function applyWith(ctx: Ctx, opts: ApplyOptions, cwd = process.cwd()): vo
     violation = check(() => {
       // 検査する木を固定する。以降の push と記録は、この SHA に対してのみ行う。
       head = git(["rev-parse", "HEAD"], cwd);
+      // 作業は route が用意した開始点から積んだものでなければならない。古いコミットから作り直すと、
+      // 保護パスの検査(merge-base との比較)では、既定ブランチに後から入った変更を消したことが見えない。
+      if (opts.head && tryGit(["merge-base", "--is-ancestor", opts.head, head], cwd) === null) {
+        return `作業の開始時のコミット(${opts.head.slice(0, 7)})から積まれていません`;
+      }
       const base = remoteSha(ctx.platform.defaultBranch());
       const protectedHit = protectedChanges(base, protectedPaths(ctx.project), cwd);
       const uncommitted = dirtyFiles(cwd).filter((f) => !f.startsWith(".taskrail/"));
