@@ -59,6 +59,70 @@ describe("route が決めること", () => {
     expect(existsSync(join(r.dir, ".taskrail/run/prompt-spec.md"))).toBe(true);
   });
 
+  it("作業ブランチを使わない工程では、head と base を空にする", () => {
+    run("spec");
+    expect(outputs().head).toBe("");
+    expect(outputs().base).toBe("");
+  });
+
+  it("差分を読む工程では、エージェントが読む作業ブランチの先頭を head に出す(別 job の apply が古さの判定に使う)", () => {
+    r.git("checkout", "-q", "-b", "issue-1-t");
+    writeFileSync(join(r.dir, "b.txt"), "実装\n");
+    r.git("add", "b.txt");
+    r.git("commit", "-qm", "実装");
+    r.git("push", "-q", "-u", "origin", "issue-1-t");
+    const tip = r.git("rev-parse", "HEAD");
+    r.git("checkout", "-q", "main");
+    p.removeLabel(1, "flow::spec");
+    p.addLabels(1, ["flow::verify"]);
+    writeFileSync(join(r.dir, "outputs.txt"), "");
+    process.env.GITHUB_OUTPUT = join(r.dir, "outputs.txt");
+    try {
+      routeWith(fakeCtx(p), { issue: "1", stage: "verify" }, r.dir);
+    } finally {
+      delete process.env.GITHUB_OUTPUT;
+    }
+    expect(outputs().head).toBe(tip);
+    expect(outputs().base).toBe("main");
+  });
+
+  it("書き込み工程では、作業の開始点を head に、既定ブランチを base に出す", () => {
+    p.removeLabel(1, "flow::spec");
+    p.addLabels(1, ["flow::doing", "ai::ok"]);
+    const start = r.git("rev-parse", "origin/main");
+    writeFileSync(join(r.dir, "outputs.txt"), "");
+    process.env.GITHUB_OUTPUT = join(r.dir, "outputs.txt");
+    try {
+      routeWith(fakeCtx(p), { issue: "1", stage: "doing" }, r.dir);
+    } finally {
+      delete process.env.GITHUB_OUTPUT;
+    }
+    expect(outputs().head).toBe(start);
+    expect(outputs().base).toBe("main");
+  });
+
+  it("作業ブランチに切り替えない(--no-checkout)ときは、head を空にする(エージェントが読むコミットが分からないため)", () => {
+    p.removeLabel(1, "flow::spec");
+    p.addLabels(1, ["flow::doing", "ai::ok"]);
+    run("doing");
+    expect(outputs().run).toBe("true");
+    expect(outputs().head).toBe("");
+  });
+
+  it("--stage がイベントのラベルと食い違えば起動しない(apply はイベントから工程を決めるため)", () => {
+    // 他の理由(ラベルがない)で止まらないよう、両方のラベルを付けておく。
+    p.addLabels(1, ["flow::plan"]);
+    run("plan", undefined, { action: "labeled", label: { name: "flow::spec" } });
+    expect(outputs().run).toBe("false");
+    expect(outputs().reason).toContain("食い違");
+  });
+
+  it("ラベル付与と起票以外のイベントでは起動しない", () => {
+    run("spec", undefined, { action: "unlabeled", label: { name: "flow::spec" } });
+    expect(outputs().run).toBe("false");
+    expect(outputs().reason).toContain("unlabeled");
+  });
+
   it("書き込み工程は ai::ok がなければ起動しない", () => {
     p.removeLabel(1, "flow::spec");
     p.addLabels(1, ["flow::doing"]);

@@ -26,6 +26,12 @@ jobs:
   # 列の移動(ラベルの変更)→ その列のエージェントを実行
   route:
     if: github.event_name == 'issues'
+    # エージェントの job と apply の job を、ひとまとまりで直列にする。route.yml の中の job ごとの group だけでは、
+    # 2 つの job の間で group が空き、別の実行に割り込まれる(待機中の apply が取り消されることもある)。
+    # route.yml の中の group と同じ名前にしないこと(外側が持ったまま内側が待ち、進まなくなる)。
+    concurrency:
+      group: taskrail-route-${{ github.event.issue.number }}
+      cancel-in-progress: false
     uses: {{TASKRAIL_OWNER}}/taskrail/.github/workflows/route.yml@{{TASKRAIL_REF}}
     with:
       taskrail_repo: {{TASKRAIL_OWNER}}/taskrail
