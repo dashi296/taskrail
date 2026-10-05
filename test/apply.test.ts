@@ -150,7 +150,7 @@ describe("apply の強制ルール", () => {
     it("別 job では、対象の Issue と工程をイベントから決める(エージェントの job の出力は書き換えられうる)", () => {
       startVerify();
       const event = join(r.dir, "..", "event.json");
-      writeFileSync(event, JSON.stringify({ issue: { number: 1 }, label: { name: "flow::verify" } }));
+      writeFileSync(event, JSON.stringify({ action: "labeled", issue: { number: 1 }, label: { name: "flow::verify" } }));
       applyWith(fakeCtx(p), { event, cleanWorkspace: true, head: r.sha() }, r.dir);
       expect(lastComment()).toContain('"status":"pass"');
       expect(p.getIssue(1).labels).toContain("flow::review");
@@ -159,9 +159,17 @@ describe("apply の強制ルール", () => {
       startVerify();
       const before = p.listComments(1).length;
       const event = join(r.dir, "..", "event.json");
-      writeFileSync(event, JSON.stringify({ issue: { number: 1 }, label: { name: "flow::verify" } }));
+      writeFileSync(event, JSON.stringify({ action: "labeled", issue: { number: 1 }, label: { name: "flow::verify" } }));
       expect(() => applyWith(fakeCtx(p), { event, issue: "2", stage: "verify", cleanWorkspace: true, head: r.sha() }, r.dir)).toThrow("イベント");
       expect(() => applyWith(fakeCtx(p), { event, issue: "1", stage: "spec", cleanWorkspace: true, head: r.sha() }, r.dir)).toThrow("イベント");
+      expect(p.listComments(1)).toHaveLength(before);
+    });
+    it("ラベル付与以外のイベントでは、何も書き込まずに止める", () => {
+      startVerify();
+      const before = p.listComments(1).length;
+      const event = join(r.dir, "..", "event.json");
+      writeFileSync(event, JSON.stringify({ action: "unlabeled", issue: { number: 1 }, label: { name: "flow::verify" } }));
+      expect(() => applyWith(fakeCtx(p), { event, cleanWorkspace: true, head: r.sha() }, r.dir)).toThrow("イベント");
       expect(p.listComments(1)).toHaveLength(before);
     });
     it("--head が SHA の形でなければ違反にする", () => {

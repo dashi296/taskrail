@@ -22,8 +22,9 @@ export interface ApplyOptions {
   dryRun?: boolean;
   /**
    * 作業ツリーが、エージェントが触っていない取得したての checkout であることを示す。
-   * エージェントとは別の job で実行する場合に使う。作業ツリーへの変更や勝手なコミットは
+   * エージェントとは別の job で実行する場合に使う。読み取り工程では、作業ツリーへの変更や勝手なコミットが
    * この checkout には存在しないため、それらの検査は行わない(構造的に持ち込めない)。
+   * 書き込み工程の検査は変わらない。加えて、--head(作業の開始点)を必須にする。
    */
   cleanWorkspace?: boolean;
   /**
@@ -204,7 +205,9 @@ export function resolveTarget(ctx: Ctx, opts: Pick<ApplyOptions, "issue" | "stag
     if (!opts.issue || !opts.stage) throw new Error("--issue と --stage、または --event を指定してください");
     return { issue: Number(opts.issue), stage: opts.stage };
   }
-  const ev = JSON.parse(readFileSync(opts.event, "utf8")) as { issue?: { number?: number }; label?: { name?: string } };
+  const ev = JSON.parse(readFileSync(opts.event, "utf8")) as { action?: string; issue?: { number?: number }; label?: { name?: string } };
+  // route がエージェントを動かすのはラベル付与のイベントだけ。
+  if (ev.action !== "labeled") throw new Error(`ラベル付与のイベントではありません: ${String(ev.action)}`);
   const issue = ev.issue?.number;
   const stage = ev.label?.name ? stageFromLabel(ctx.flow, ev.label.name)?.id : undefined;
   if (!issue || !stage) throw new Error("イベントから対象の Issue と工程を決められません");

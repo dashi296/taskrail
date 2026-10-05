@@ -58,6 +58,12 @@ export function routeWith(ctx: Ctx, opts: RouteOptions, cwd = process.cwd()): vo
     return skip("起票を inbox に載せました");
   }
 
+  // ラベル付与のイベントだけを扱う(呼び出し側が他のイベントを渡しても、エージェントを動かさない)。
+  if (ev.action !== undefined && ev.action !== "labeled") return skip(`ラベル付与のイベントではありません: ${ev.action}`);
+  // apply は工程をイベントから決める。--stage がイベントのラベルと違えば、両者が別の工程を対象にしてしまう。
+  if (opts.stage && ev.label?.name && flowLabel(ctx.flow, opts.stage) !== ev.label.name) {
+    return skip(`--stage ${opts.stage} がイベントのラベル(${ev.label.name})と食い違っています`);
+  }
   const labelName = opts.stage ? flowLabel(ctx.flow, opts.stage) : ev.label?.name;
   if (!labelName) return skip("対象のラベルがありません");
   const stage = stageFromLabel(ctx.flow, labelName);
@@ -118,7 +124,8 @@ export function routeWith(ctx: Ctx, opts: RouteOptions, cwd = process.cwd()): vo
     max_turns: stage.max_turns,
     branch,
     // エージェントが読むコミット。apply を別 job で動かすとき、検証の基準として渡す。
-    head: needsBranch ? (tryGit(["rev-parse", "HEAD"], cwd) ?? "") : "",
+    // 作業ブランチに切り替えない(--no-checkout)ときは、エージェントが何を読むか分からないので出さない。
+    head: needsBranch && opts.checkout !== false ? (tryGit(["rev-parse", "HEAD"], cwd) ?? "") : "",
     base: base ?? "",
     agents: stage.agents.join(","),
     allowed_bots: allowedBots(ctx.project.bot_logins),
