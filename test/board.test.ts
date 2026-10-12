@@ -634,6 +634,26 @@ describe("ボードの同期(planBoard / board sync)", () => {
       syncBoard(fakeCtx(p, { board: BOARD }));
       expect(p.board.has(2)).toBe(false);
     });
+    it("追加する Issue を取得できなくても、ほかの Issue は写し、最後に失敗として返す", () => {
+      p.addIssue(3, ["flow::plan"]);
+      p.failingIssues.add(2);
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/#2/);
+      expect([...p.board]).toEqual([
+        [1, "Spec"],
+        [3, "Plan"],
+      ]);
+      expect(logged()).toContain("#2: Issue を取得できない");
+      expect(logged()).not.toContain("一致しています");
+    });
+    it("Issue の一覧を読めなければ、board を出力せずに失敗する", () => {
+      const out = vi.mocked(console.log);
+      vi.spyOn(p, "listOpenIssuesByLabel").mockImplementation(() => {
+        throw new Error("gh api が失敗しました: HTTP 502");
+      });
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/502/);
+      expect(out.mock.calls).toEqual([]);
+      expect([...p.board]).toEqual([[1, "Inbox"]]);
+    });
     it("ボードを読めたら、一部の Issue で失敗しても board=on を出力する(設定の不備と区別できる)", () => {
       const out = vi.mocked(console.log);
       p.failingBoardIssues.add(1);

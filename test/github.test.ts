@@ -348,7 +348,8 @@ describe("GitHub アダプタ(ボード = Projects)", () => {
     const gh = new GitHub("o/r", run);
     gh.readBoard(BOARD);
     gh.setBoardColumn(BOARD, 7, "Spec");
-    expect(calls[1]!.args).toEqual(["api", "repos/o/r/issues/7", "--jq", ".node_id"]);
+    // 追加する Issue の ID も、ボードと同じホストから取る。
+    expect(calls[1]!.args).toEqual(["api", "repos/o/r/issues/7", "--hostname", "github.com", "--jq", ".node_id"]);
     expect(calls[2]!.args.slice(6)).toEqual(["-f", "project=P1", "-f", "content=NODE7"]);
     expect(calls[3]!.args.slice(6)).toEqual(["-f", "project=P1", "-f", "item=I9", "-f", "field=F1", "-f", "option=o-spec"]);
   });

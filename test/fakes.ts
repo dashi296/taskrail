@@ -35,7 +35,10 @@ export class FakePlatform implements Platform {
     return this.remoteId;
   }
 
+  /** 取得が失敗する Issue(API の失敗を模す)。 */
+  failingIssues = new Set<number>();
   getIssue(n: number): Issue {
+    if (this.failingIssues.has(n)) throw new Error("gh api が失敗しました: HTTP 502");
     const i = this.issues.get(n);
     if (!i) throw new Error(`no issue ${n}`);
     return { ...i, labels: [...i.labels] };
@@ -61,7 +64,7 @@ export class FakePlatform implements Platform {
     this.labelEvents.set(n, [...(this.labelEvents.get(n) ?? []), { label, action: "unlabeled", at: this.tick() }]);
   }
   listOpenIssuesByLabel(label: string): Issue[] {
-    return [...this.issues.values()].filter((i) => i.state === "open" && i.labels.includes(label)).map((i) => this.getIssue(i.number));
+    return [...this.issues.values()].filter((i) => i.state === "open" && i.labels.includes(label)).map((i) => ({ ...i, labels: [...i.labels] }));
   }
   listLabelEvents(n: number): LabelEvent[] {
     return this.labelEvents.get(n) ?? [];

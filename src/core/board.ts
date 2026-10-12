@@ -24,6 +24,7 @@ export interface BoardPlan {
  * - 列の判定は route などと同じ currentStage で行う。
  */
 export function planBoard(flow: Flow, items: BoardItem[], labeled: Issue[]): BoardPlan {
+  // labeled は、ボードに追加する候補(flow ラベルの付いた Issue)。ボードにあるものが混ざっていてもよい。
   const targets = new Map<number, { labels: string[]; state: "open" | "closed"; from: string | null }>();
   for (const i of labeled) targets.set(i.number, { labels: i.labels, state: i.state, from: null });
   // ボード上のアイテムを後から入れ、いまの列を持つほうを優先する。

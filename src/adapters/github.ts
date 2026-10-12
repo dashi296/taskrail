@@ -23,8 +23,9 @@ export class GitHub implements Platform {
     return this.run(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
   }
 
-  private api(path: string, opts: { method?: string; body?: unknown; paginate?: boolean; jq?: string } = {}): string {
+  private api(path: string, opts: { method?: string; body?: unknown; paginate?: boolean; jq?: string; hostname?: string } = {}): string {
     const args = ["api", path.startsWith("/") ? path : `repos/${this.repo}/${path}`];
+    if (opts.hostname) args.push("--hostname", opts.hostname);
     if (opts.method) args.push("--method", opts.method);
     if (opts.paginate) args.push("--paginate");
     if (opts.jq) args.push("--jq", opts.jq);
@@ -243,7 +244,8 @@ export class GitHub implements Platform {
     if (!option) throw new Error(`ボードに列「${column}」がありません。Status の選択肢に追加してください`);
     let item = meta.items.get(issue);
     if (!item) {
-      const content = this.api(`issues/${issue}`, { jq: ".node_id" }).trim();
+      // ボードと同じホストの Issue を追加する(ほかのホストの同じ番号の Issue の ID を渡さない)。
+      const content = this.api(`issues/${issue}`, { jq: ".node_id", hostname: meta.host }).trim();
       item = this.graphql<{ addProjectV2ItemById: { item: { id: string } } }>(
         meta.host,
         "mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }",

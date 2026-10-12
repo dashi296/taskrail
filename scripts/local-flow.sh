@@ -47,10 +47,12 @@ labels_of() { gh issue view "$issue" --json labels --jq '.labels[].name' | sort;
 has_label() { labels_of | grep -qxF "$1"; }
 
 # ラベルの列をボードに写す。前に写したときからこの Issue のラベルが変わっていなければ、何もしない。
-# 同期が無効(board が未設定、TASKRAIL_ENABLED=false)か、ボードを読めなかったら、この実行では以降は呼ばない
-# (設定や権限の不備は再試行しても直らない)。一部の Issue だけ写せなかったときは、続ける。
+# 同期が無効(board が未設定、TASKRAIL_ENABLED=false)なら、この実行では以降は呼ばない。
+# 失敗したときは「写した」と記録せず、次の回にもう一度試す(一時的な失敗のため)。
+# 続けて 3 回失敗したら、設定や権限の不備とみて、この実行では以降は呼ばない。
 board=on
 synced_labels="-"
+sync_failures=0
 sync_board() {
   [ "$board" = on ] || return 0
   local now
@@ -62,13 +64,17 @@ sync_board() {
   : >"$out"
   if GITHUB_OUTPUT="$out" "${taskrail[@]}" board sync; then
     [ "$(get board)" = on ] || board=off
-  elif [ "$(get board)" = on ]; then
-    say "警告: ボードに写せなかった Issue があります(工程は続けます)"
-  else
-    say "警告: ボードを同期できませんでした。この実行では以降は同期しません(工程は続けます)"
-    board=off
+    synced_labels="$now"
+    sync_failures=0
+    return 0
   fi
-  synced_labels="$now"
+  sync_failures=$((sync_failures + 1))
+  if [ "$sync_failures" -ge 3 ]; then
+    say "警告: ボードの同期に続けて失敗しました。この実行では以降は同期しません(工程は続けます)"
+    board=off
+  else
+    say "警告: ボードを同期できませんでした。次の回にもう一度試します(工程は続けます)"
+  fi
 }
 
 ci_waited=0
@@ -97,8 +103,9 @@ for ((step = 1; step <= max_steps; step++)); do
       # 列を移した直後は GitHub の検索に反映されるまで数十秒かかる。数回試してから諦める。
       for attempt in 1 2 3; do
         "${taskrail[@]}" dispatch "${dispatch_args[@]}"
+        synced_labels="-" # dispatch はほかの Issue も動かすので、この Issue が動かなくてもボードに写す
         [ "$(labels_of)" = "$before" ] || break
-        [ "$attempt" = 3 ] && { say "停止: 着手できません(WIP上限、依存、ai::ok の未付与のいずれか)"; exit 0; }
+        [ "$attempt" = 3 ] && { sync_board; say "停止: 着手できません(WIP上限、依存、ai::ok の未付与のいずれか)"; exit 0; }
         say "着手されませんでした。$((attempt * 15)) 秒後にもう一度試します"
         sleep $((attempt * 15))
       done
