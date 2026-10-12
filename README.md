@@ -113,6 +113,7 @@ CI が複数あっても、作業ブランチの検査がすべて成功して�
 check_commands: [npm run lint, npm test]   # エージェントが完了前に通すコマンド。空なら文書や CI の定義から判断する
 protected_paths: [".github/**", "taskrail.yml", "CODEOWNERS", "db/migrations/**", "**/.env*"]
 wip_limit: 2
+board: "https://github.com/users/<you>/projects/1"   # 列を写す GitHub Projects。空なら同期しない
 ```
 
 `protected_paths` に何を書いても、ルール文書(`**/CLAUDE.md`、`**/CLAUDE.local.md`、`**/AGENTS.md`、`docs/constitution.md`)、エージェントの設定(`.claude/**`、`.mcp.json`)、CI の定義(`.github/workflows/**`、`.github/actions/**`、`.gitlab-ci.yml`、`.gitlab/ci/**`)、`taskrail.yml` は常に保護されます。
@@ -146,6 +147,7 @@ Claude Code を使っているなら、プラグインの `taskrail-init` skill 
 | `dispatch` | Ready → In Progress(WIP上限と依存関係を確認) | CI(定期) |
 | `advance` | CI成功・修正依頼・マージを列の移動に反映する | CI |
 | `resume` | blocked の Issue を回答コメントで再開する | CI |
+| `board sync` | `flow::` ラベルの列を、設定 `board` のボードに写す | 人間・ローカル実行 |
 
 `route` と `apply` は手元でも試せます。Issue 上の記録は、信頼する投稿者(`bot_logins`、または環境変数 `TASKRAIL_BOT_LOGIN` / `TASKRAIL_RECORD_AUTHOR`)のものだけを読みます。
 
@@ -172,6 +174,8 @@ LOCAL_CHECKS=1 /path/to/taskrail/scripts/local-flow.sh 12 # CI を待たず、�
 本番(Actions)は PR の CI の成功で判定するため、判定の根拠が異なります。
 検査は、認証情報を渡さない環境(許可リストの環境変数、使い捨ての HOME)で実行します。
 私有レジストリの設定などを渡したい場合は `TASKRAIL_CHECK_ENV=MY_VAR,OTHER_VAR` を指定します。
+
+設定に `board` があれば、開始時と各工程の後に、列をボードへ写します([ボードに列を表示する](#ボードに列を表示する))。
 
 止まるのは、仕様の承認、計画の承認、最終レビュー、`blocked`、着手できないとき、CI の待ち時間切れです。
 承認はラベルを手で付け替え、もう一度実行すると続きから進みます。
@@ -200,6 +204,21 @@ DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まず
   ```
 - `--ci` でワークフローを置いている場合は、Actions が同時に動かないよう、リポジトリ変数 `TASKRAIL_ENABLED` を `false` にしておきます。
 
+### ボードに列を表示する
+
+GitHub Projects のボードは `flow::` ラベルを列にできないため、`taskrail board sync` がラベルから Status フィールドへ写します。
+
+1. Projects を作り、Status の選択肢を列の名前に合わせる(Inbox、Spec、Plan、Ready、In Progress、Verify、Human Review、Done)。
+   名前は `flow/flow.yml` の `title` と一致させます。選択肢がなければ同期は失敗します(taskrail は選択肢を作りません)。
+2. 設定の `board` に Projects の URL を書く。
+3. `taskrail board sync` を実行する(`--dry-run` で、動かす Issue の表示だけ)。`gh` のトークンには `project` スコープが必要です(`gh auth refresh -s project`)。
+
+- 写す向きはラベルからボードへの一方向です。カードをドラッグしてもラベルは変わらず、taskrail は動きません。次の同期で元の列に戻ります。
+  承認は、これまで通りラベルの付け替えで行います。
+- 対象は、ボードにある Issue と、`flow::` ラベルの付いた open の Issue です(ボードになければ追加します)。`flow::` ラベルのない Issue には触りません。
+- 毎回全体を突き合わせるので、途中で失敗しても次の実行で直ります。
+- Actions からの自動同期は未実装です。ラベルを手で変えた直後は、次に `board sync` か `local-flow.sh` を実行するまで反映されません。
+
 ## 改善の回し方
 
 フローの定義はデータ(`flow/`)、CLI は実行器です。日々の改善はほとんど `flow/` の変更で済みます。
@@ -227,6 +246,8 @@ npm run check    # 型チェック + 単体テスト + flow.yml の整合性検�
 - `anthropics/claude-code-action@v1` の入力名(`prompt`、`claude_args`)に依存しています。
   action 側の変更で動かなくなる可能性があるため、導入時に最新の README を確認してください。
 - GitLab アダプタは未実装です([docs/gitlab.md](docs/gitlab.md))。
+- ボードの同期(`board sync`)は手元でだけ動きます。Actions からの同期は未実装です(個人が所有する Projects は、
+  ワークフローの `GITHUB_TOKEN` では書き換えられないため、追加の認証情報が必要になります)。
 - 掃除エージェント(`flow/prompts/janitor.md`)はプロンプトのみで、起動の仕組みは未実装です。
 - 子Issue の自動作成は未実装です。計画エージェントは分割案を出すところまでで、作成は人間が行います。
 - 書き込み工程のエージェントは Bash を使えます。ランナー上の環境変数を読める可能性があるため、

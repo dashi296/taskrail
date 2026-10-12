@@ -42,6 +42,14 @@ export interface CiRun {
   createdAt: string;
 }
 
+/** ボードに載っている Issue と、いま置かれている列。 */
+export interface BoardItem {
+  number: number;
+  labels: string[];
+  /** 列の名前。どの列にもなければ null。 */
+  column: string | null;
+}
+
 /**
  * GitHub と GitLab の差を吸収する層。
  * フローのロジック(core/)はこのインターフェースだけに依存する。
@@ -72,4 +80,8 @@ export interface Platform {
   commitChecks(sha: string): ChecksState;
   /** コミットに対する CI の実行。 */
   ciRuns(sha: string): CiRun[];
+  /** ボードに載っている、このリポジトリの Issue。board は設定の `board`(場所の表し方はプラットフォームごと)。 */
+  listBoardItems(board: string): BoardItem[];
+  /** Issue をボードの列に置く。ボードになければ追加する。列がなければ失敗する(列は作らない)。 */
+  setBoardColumn(board: string, issue: number, column: string): void;
 }

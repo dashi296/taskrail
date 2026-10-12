@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { canTransition, currentStage, flowLabel } from "../core/flow.js";
 import { answersFor } from "../core/answers.js";
+import { planBoard } from "../core/board.js";
 import { runChecks } from "../core/checks.js";
 import { fetchCommit, issueFromBranch } from "../core/git.js";
 import { implementedBranch, parseRuns } from "../core/record.js";
@@ -243,4 +244,41 @@ export function resume(opts: CommonOpts & { event?: string; issue?: string }): v
   ctx.platform.removeLabel(issue.number, ctx.flow.blocked_label);
   // 同じ列のラベルを付け直すと labeled イベントが発火し、その工程がもう一度走る。
   moveTo(ctx, ctx.platform.getIssue(issue.number), stage.id);
+}
+
+/** flow ラベルの列をボードに写す。ラベルが正で、ボードは表示用。taskrail はボードの列を読まない。 */
+export function boardSync(opts: CommonOpts): void {
+  if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
+  syncBoard(loadCtx(opts), opts);
+}
+
+/**
+ * boardSync の本体。差分ではなく毎回全体を突き合わせるので、途中で失敗しても次の実行で直る。
+ * 1件の失敗でほかの Issue を止めず、最後にまとめて失敗として返す。
+ */
+export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
+  const board = ctx.project.board;
+  if (!board) {
+    setOutputs({ board: "off" });
+    return log("board が未設定のため同期しません");
+  }
+  const items = ctx.platform.listBoardItems(board);
+  const labeled = ctx.flow.stages.flatMap((s) => ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, s.id)));
+  const plan = planBoard(ctx.flow, items, labeled);
+  for (const n of plan.ambiguous) log(`#${n}: flow ラベルが複数あるため、ボードは動かしません`);
+
+  const failed: number[] = [];
+  for (const m of plan.moves) {
+    log(`#${m.number}: ${m.from ?? "(列なし)"} → ${m.column}`);
+    if (opts.dryRun) continue;
+    try {
+      ctx.platform.setBoardColumn(board, m.number, m.column);
+    } catch (e) {
+      failed.push(m.number);
+      log(`#${m.number}: ボードの更新に失敗しました: ${(e as Error).message}`);
+    }
+  }
+  if (!plan.moves.length) log("ボードはラベルと一致しています");
+  setOutputs({ board: "on" });
+  if (failed.length) throw new Error(`ボードを更新できなかった Issue があります: ${failed.map((n) => `#${n}`).join(", ")}`);
 }

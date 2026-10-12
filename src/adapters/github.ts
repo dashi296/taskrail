@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
+import type { BoardItem, ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
 
 /**
  * GitHub アダプタ。`gh` CLI 経由で API を呼ぶ。
@@ -180,7 +180,104 @@ export class GitHub implements Platform {
       ".workflow_runs[]",
     ).map((r) => ({ name: r.name, event: r.event, status: r.status, conclusion: r.conclusion, createdAt: r.created_at }));
   }
+
+  /** 読み込んだボード(Projects)。setBoardColumn が ID の対応に使う。 */
+  private readonly boards = new Map<string, BoardMeta>();
+
+  private graphql<T>(query: string, vars: Record<string, string | number>): T {
+    const args = ["api", "graphql", "-f", `query=${query}`];
+    // 数値は -F で型つきに、文字列は -f でそのまま渡す(-F は @ で始まる値をファイルとして読むため)。
+    for (const [k, v] of Object.entries(vars)) args.push(typeof v === "number" ? "-F" : "-f", `${k}=${v}`);
+    return (JSON.parse(this.run(args)) as { data: T }).data;
+  }
+
+  listBoardItems(board: string): BoardItem[] {
+    const m = /\/(users|orgs)\/([^/\s]+)\/projects\/(\d+)(?:[/?#]|$)/.exec(board);
+    if (!m) throw new Error(`board は Projects の URL で指定してください(例: https://github.com/users/me/projects/1): ${board}`);
+    const query = BOARD_QUERY.replace("OWNER", m[1] === "orgs" ? "organization" : "user");
+    const meta: BoardMeta = { projectId: "", fieldId: "", options: new Map(), items: new Map() };
+    const items: BoardItem[] = [];
+    for (let after: string | undefined; ; ) {
+      const vars = { login: m[2]!, number: Number(m[3]), ...(after ? { after } : {}) };
+      const project = this.graphql<{ owner: { projectV2: RawProject | null } | null }>(query, vars).owner?.projectV2;
+      if (!project) throw new Error(`ボードが見つかりません: ${board}`);
+      if (!project.field?.id) throw new Error(`ボードに Status フィールド(単一選択)がありません: ${board}`);
+      meta.projectId = project.id;
+      meta.fieldId = project.field.id;
+      for (const o of project.field.options ?? []) meta.options.set(o.name, o.id);
+      for (const n of project.items.nodes) {
+        // 下書きや PR、ほかのリポジトリの Issue は対象外。
+        const c = n.content;
+        if (typeof c?.number !== "number" || c.repository?.nameWithOwner.toLowerCase() !== this.repo.toLowerCase()) continue;
+        meta.items.set(c.number, n.id);
+        items.push({ number: c.number, labels: (c.labels?.nodes ?? []).map((l) => l.name), column: n.fieldValueByName?.name ?? null });
+      }
+      if (!project.items.pageInfo.hasNextPage) break;
+      after = project.items.pageInfo.endCursor;
+    }
+    this.boards.set(board, meta);
+    return items;
+  }
+
+  setBoardColumn(board: string, issue: number, column: string): void {
+    if (!this.boards.has(board)) this.listBoardItems(board);
+    const meta = this.boards.get(board)!;
+    const option = meta.options.get(column);
+    if (!option) throw new Error(`ボードに列「${column}」がありません。Status の選択肢に追加してください`);
+    let item = meta.items.get(issue);
+    if (!item) {
+      const content = this.api(`issues/${issue}`, { jq: ".node_id" }).trim();
+      item = this.graphql<{ addProjectV2ItemById: { item: { id: string } } }>(
+        "mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }",
+        { project: meta.projectId, content },
+      ).addProjectV2ItemById.item.id;
+      meta.items.set(issue, item);
+    }
+    this.graphql(
+      "mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}) { projectV2Item { id } } }",
+      { project: meta.projectId, item, field: meta.fieldId, option },
+    );
+  }
 }
+
+interface BoardMeta {
+  projectId: string;
+  fieldId: string;
+  /** 列の名前 → 選択肢の ID。 */
+  options: Map<string, string>;
+  /** Issue 番号 → アイテムの ID。 */
+  items: Map<number, string>;
+}
+interface RawProject {
+  id: string;
+  field: { id?: string; options?: { id: string; name: string }[] } | null;
+  items: {
+    pageInfo: { hasNextPage: boolean; endCursor: string };
+    nodes: {
+      id: string;
+      content: { number?: number; repository?: { nameWithOwner: string }; labels?: { nodes: { name: string }[] } } | null;
+      fieldValueByName: { name?: string } | null;
+    }[];
+  };
+}
+
+/** Projects のアイテムと Status の選択肢。OWNER は user か organization に置き換える。 */
+const BOARD_QUERY = `query($login: String!, $number: Int!, $after: String) {
+  owner: OWNER(login: $login) {
+    projectV2(number: $number) {
+      id
+      field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } }
+      items(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          content { ... on Issue { number repository { nameWithOwner } labels(first: 100) { nodes { name } } } }
+          fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+        }
+      }
+    }
+  }
+}`;
 
 interface RawCheckRun {
   name: string;

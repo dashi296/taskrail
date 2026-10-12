@@ -31,3 +31,7 @@ protected_paths:
   - "**/.env*"
 
 branch_prefix: "issue-"
+
+# flow:: ラベルの列を写すボード(GitHub なら Projects の URL。例: "https://github.com/users/me/projects/1")。
+# 空なら同期しません。ボードは表示用で、taskrail はボードの列を読みません。
+board: ""

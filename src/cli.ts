@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { apply } from "./commands/apply.js";
-import { advance, dispatch, resume } from "./commands/board.js";
+import { advance, boardSync, dispatch, resume } from "./commands/board.js";
 import { metrics } from "./commands/metrics.js";
 import { next } from "./commands/next.js";
 import { route } from "./commands/route.js";
@@ -103,6 +103,12 @@ common(program
   .option("--event <path>", "イベントのJSON(GitHub では $GITHUB_EVENT_PATH)")
   .option("--issue <n>", "Issue番号を指定して再開する(ローカル実行用)")
   .option("--dry-run")).action(resume);
+
+const board = program.command("board").description("ボード(GitHub なら Projects)の操作");
+common(board
+  .command("sync")
+  .description("flow ラベルの列を、設定 board のボードに写す(ラベルが正。ボードの列は読まない)")
+  .option("--dry-run")).action(boardSync);
 
 program.parseAsync().catch((e: Error) => {
   console.error(`[taskrail] エラー: ${e.message}`);

@@ -8,6 +8,9 @@
 #   check-ci  … 実装した PR の CI の成功を待って doing → verify
 #   stop      … 人間の承認待ち、blocked、完了。ここで止まる
 #
+# 設定に board があれば、開始時と各工程の後に、列をボードへ写す(taskrail board sync)。
+# ボードは表示用なので、同期に失敗しても工程は止めない。
+#
 # 環境変数:
 #   MAX_STEPS    … 進める工程の上限(既定 20)
 #   CI_TIMEOUT   … CI を待つ秒数(既定 1200)。0 で待たずに止まる
@@ -43,8 +46,20 @@ get() { grep "^$1=" "$out" | tail -1 | cut -d= -f2- || true; }
 labels_of() { gh issue view "$issue" --json labels --jq '.labels[].name' | sort; }
 has_label() { labels_of | grep -qxF "$1"; }
 
+# ラベルの列をボードに写す。board が未設定なら、最初の1回で分かるので以降は呼ばない。
+board=on
+sync_board() {
+  [ "$board" = on ] || return 0
+  : >"$out"
+  GITHUB_OUTPUT="$out" "${taskrail[@]}" board sync || say "警告: ボードを同期できませんでした(工程は続けます)"
+  [ "$(get board)" = off ] && board=off
+  return 0
+}
+
 ci_waited=0
 for ((step = 1; step <= max_steps; step++)); do
+  # CI を待っている間は列が動かないので、同期しない。
+  [ "$ci_waited" -gt 0 ] || sync_board
   : >"$out"
   GITHUB_OUTPUT="$out" "${taskrail[@]}" next --issue "$issue" >/dev/null
   action="$(get action)"
@@ -104,4 +119,5 @@ for ((step = 1; step <= max_steps; step++)); do
   esac
 done
 
+sync_board
 say "停止: 工程の上限($max_steps)に達しました"
