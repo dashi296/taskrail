@@ -184,16 +184,18 @@ export class GitHub implements Platform {
   /** readBoard で読み込んだボード(Projects)。setBoardColumn が ID の対応に使う。 */
   private readonly boards = new Map<string, BoardMeta>();
 
-  private graphql<T>(query: string, vars: Record<string, string | number>): T {
-    const args = ["api", "graphql", "-f", `query=${query}`];
+  /** host は問い合わせ先。gh の既定のホスト(認証の状態や環境変数で変わる)に任せず、検証したホストを明示する。 */
+  private graphql<T>(host: string, query: string, vars: Record<string, string | number>): T {
+    const args = ["api", "graphql", "--hostname", host, "-f", `query=${query}`];
     // 数値は -F で型つきに、文字列は -f でそのまま渡す(-F は @ で始まる値をファイルとして読むため)。
     for (const [k, v] of Object.entries(vars)) args.push(typeof v === "number" ? "-F" : "-f", `${k}=${v}`);
     return (JSON.parse(this.run(args)) as { data: T }).data;
   }
 
   readBoard(board: string): Board {
-    // gh は既定のホストに問い合わせる。別のホストの URL を、同じ持ち主・同じ番号の別のボードとして読み書きしない。
-    const host = this.remoteIdentity().host;
+    // 別のホストの URL を、同じ持ち主・同じ番号の別のボードとして読み書きしない。
+    // リポジトリのホストと一致する URL だけを受け付け、問い合わせ先もそのホストに固定する。
+    const host = this.remoteIdentity().host.toLowerCase();
     let url: URL | null = null;
     try {
       url = new URL(board);
@@ -202,22 +204,23 @@ export class GitHub implements Platform {
     }
     const m = url && /^\/(users|orgs)\/([^/]+)\/projects\/(\d+)(?:\/|$)/.exec(url.pathname);
     if (!url || !m) throw new Error(`board は Projects の URL で指定してください(例: https://${host}/users/me/projects/1): ${board}`);
-    if (url.protocol !== "https:" || url.host !== host) throw new Error(`board のホストが、このリポジトリのホスト(${host})と違います: ${board}`);
+    if (url.protocol !== "https:") throw new Error(`board は https の URL で指定してください: ${board}`);
+    if (url.host !== host) throw new Error(`board のホストが、このリポジトリのホスト(${host})と違います: ${board}`);
     const query = BOARD_QUERY.replace("OWNER", m[1] === "orgs" ? "organization" : "user");
-    const meta: BoardMeta = { projectId: "", fieldId: "", options: new Map(), items: new Map() };
+    const meta: BoardMeta = { host, projectId: "", fieldId: "", options: new Map(), items: new Map() };
     const items: BoardItem[] = [];
     for (let after: string | undefined; ; ) {
       const vars = { login: m[2]!, number: Number(m[3]), ...(after ? { after } : {}) };
-      const project = this.graphql<{ owner: { projectV2: RawProject | null } | null }>(query, vars).owner?.projectV2;
+      const project = this.graphql<{ owner: { projectV2: RawProject | null } | null }>(host, query, vars).owner?.projectV2;
       if (!project) throw new Error(`ボードが見つかりません: ${board}`);
       if (!project.field?.id) throw new Error(`ボードに Status フィールド(単一選択)がありません: ${board}`);
       meta.projectId = project.id;
       meta.fieldId = project.field.id;
       for (const o of project.field.options ?? []) meta.options.set(o.name, o.id);
       for (const n of project.items.nodes) {
-        // 下書きや PR、ほかのリポジトリの Issue は対象外。
-        const c = n.content;
-        if (typeof c?.number !== "number" || c.repository?.nameWithOwner.toLowerCase() !== this.repo.toLowerCase()) continue;
+        // 下書きや PR、ほかのリポジトリの Issue、読めないアイテム(null)は対象外。
+        const c = n?.content;
+        if (!n || typeof c?.number !== "number" || c.repository?.nameWithOwner.toLowerCase() !== this.repo.toLowerCase()) continue;
         meta.items.set(c.number, n.id);
         items.push({
           number: c.number,
@@ -242,12 +245,14 @@ export class GitHub implements Platform {
     if (!item) {
       const content = this.api(`issues/${issue}`, { jq: ".node_id" }).trim();
       item = this.graphql<{ addProjectV2ItemById: { item: { id: string } } }>(
+        meta.host,
         "mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }",
         { project: meta.projectId, content },
       ).addProjectV2ItemById.item.id;
       meta.items.set(issue, item);
     }
     this.graphql(
+      meta.host,
       "mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}) { projectV2Item { id } } }",
       { project: meta.projectId, item, field: meta.fieldId, option },
     );
@@ -255,6 +260,7 @@ export class GitHub implements Platform {
 }
 
 interface BoardMeta {
+  host: string;
   projectId: string;
   fieldId: string;
   /** 列の名前 → 選択肢の ID。 */
@@ -267,11 +273,11 @@ interface RawProject {
   field: { id?: string; options?: { id: string; name: string }[] } | null;
   items: {
     pageInfo: { hasNextPage: boolean; endCursor: string };
-    nodes: {
+    nodes: ({
       id: string;
       content: { number?: number; state?: string; repository?: { nameWithOwner: string }; labels?: { nodes: { name: string }[] } } | null;
       fieldValueByName: { name?: string } | null;
-    }[];
+    } | null)[];
   };
 }
 

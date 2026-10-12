@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { advanceIssue, checksPassed, dispatchWith, missingCiRuns, recheckImplemented, resumeIssue, syncBoard } from "../src/commands/board.js";
 import { staleReason } from "../src/commands/apply.js";
 import { nextStep } from "../src/commands/next.js";
@@ -548,10 +548,16 @@ describe("ボードの同期(planBoard / board sync)", () => {
     beforeEach(() => {
       errors = vi.spyOn(console, "error").mockImplementation(() => {});
       vi.spyOn(console, "log").mockImplementation(() => {});
+      // 出力を標準出力に出させる(Actions 上では GITHUB_OUTPUT のファイルに書かれるため)。
+      vi.stubEnv("GITHUB_OUTPUT", "");
       p = new FakePlatform();
       p.addIssue(1, ["flow::spec"]);
       p.addIssue(2, ["flow::doing"]);
       p.board.set(1, "Inbox");
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
     });
 
     it("列を直し、ボードにない Issue を追加する", () => {
@@ -611,6 +617,41 @@ describe("ボードの同期(planBoard / board sync)", () => {
       expect(p.board.get(1)).toBe("Inbox");
       expect(logged()).toContain("#1: flow ラベルが1つに定まらない");
       expect(logged()).not.toContain("一致しています");
+    });
+    it("ボードにない Issue は、古い一覧ではなく、取得し直したラベルで列を決める", () => {
+      // ラベル別の一覧は、ラベルを変えた直後に古い内容を返すことがある(#2 は doing から verify に移った直後)。
+      const stale = { ...p.getIssue(2) };
+      p.removeLabel(2, "flow::doing");
+      p.addLabels(2, ["flow::verify"]);
+      vi.spyOn(p, "listOpenIssuesByLabel").mockImplementation((label) => (label === "flow::doing" ? [stale] : []));
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect(p.board.get(2)).toBe("Verify");
+    });
+    it("一覧に出た後で閉じられた Issue は追加しない", () => {
+      const stale = { ...p.getIssue(2) };
+      p.issues.set(2, { ...p.getIssue(2), state: "closed" });
+      vi.spyOn(p, "listOpenIssuesByLabel").mockImplementation((label) => (label === "flow::doing" ? [stale] : []));
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect(p.board.has(2)).toBe(false);
+    });
+    it("ボードを読めたら、一部の Issue で失敗しても board=on を出力する(設定の不備と区別できる)", () => {
+      const out = vi.mocked(console.log);
+      p.failingBoardIssues.add(1);
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow();
+      expect(out.mock.calls.map((c) => c[0])).toContain("board=on");
+    });
+    it("ボードを読めなければ、board を出力しない", () => {
+      const out = vi.mocked(console.log);
+      vi.spyOn(p, "readBoard").mockImplementation(() => {
+        throw new Error("gh api が失敗しました: HTTP 401");
+      });
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/401/);
+      expect(out.mock.calls).toEqual([]);
+    });
+    it("board が未設定なら board=off を出力する", () => {
+      const out = vi.mocked(console.log);
+      syncBoard(fakeCtx(p));
+      expect(out.mock.calls.map((c) => c[0])).toEqual(["board=off"]);
     });
     it("ラベルは変えない(ボードからラベルへは写さない)", () => {
       p.board.set(2, "Done");

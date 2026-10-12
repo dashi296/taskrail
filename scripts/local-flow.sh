@@ -8,7 +8,7 @@
 #   check-ci  … 実装した PR の CI の成功を待って doing → verify
 #   stop      … 人間の承認待ち、blocked、完了。ここで止まる
 #
-# 設定に board があれば、開始時と各工程の後に、列をボードへ写す(taskrail board sync)。
+# 設定に board があれば、開始時と、この Issue の列が動くたびに、列をボードへ写す(taskrail board sync)。
 # ボードは表示用なので、同期に失敗しても工程は止めない。
 #
 # 環境変数:
@@ -47,19 +47,25 @@ labels_of() { gh issue view "$issue" --json labels --jq '.labels[].name' | sort;
 has_label() { labels_of | grep -qxF "$1"; }
 
 # ラベルの列をボードに写す。前に写したときからこの Issue のラベルが変わっていなければ、何もしない。
-# board が未設定、または同期に失敗したら、この実行では以降は呼ばない(設定や権限の不備は再試行しても直らない)。
+# 同期が無効(board が未設定、TASKRAIL_ENABLED=false)か、ボードを読めなかったら、この実行では以降は呼ばない
+# (設定や権限の不備は再試行しても直らない)。一部の Issue だけ写せなかったときは、続ける。
 board=on
 synced_labels="-"
 sync_board() {
   [ "$board" = on ] || return 0
   local now
-  now="$(labels_of)" || return 0
+  if ! now="$(labels_of)"; then
+    say "警告: #$issue のラベルを取得できないため、ボードの同期を見送ります"
+    return 0
+  fi
   [ "$now" != "$synced_labels" ] || return 0
   : >"$out"
-  if ! GITHUB_OUTPUT="$out" "${taskrail[@]}" board sync; then
+  if GITHUB_OUTPUT="$out" "${taskrail[@]}" board sync; then
+    [ "$(get board)" = on ] || board=off
+  elif [ "$(get board)" = on ]; then
+    say "警告: ボードに写せなかった Issue があります(工程は続けます)"
+  else
     say "警告: ボードを同期できませんでした。この実行では以降は同期しません(工程は続けます)"
-    board=off
-  elif [ "$(get board)" = off ]; then
     board=off
   fi
   synced_labels="$now"

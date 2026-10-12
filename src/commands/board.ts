@@ -248,7 +248,10 @@ export function resume(opts: CommonOpts & { event?: string; issue?: string }): v
 
 /** flow ラベルの列をボードに写す。ラベルが正で、ボードは表示用。taskrail はボードの列を読まない。 */
 export function boardSync(opts: CommonOpts): void {
-  if (!isEnabled()) return log("TASKRAIL_ENABLED=false のため何もしません");
+  if (!isEnabled()) {
+    setOutputs({ board: "off" });
+    return log("TASKRAIL_ENABLED=false のため何もしません");
+  }
   syncBoard(loadCtx(opts), opts);
 }
 
@@ -256,6 +259,7 @@ export function boardSync(opts: CommonOpts): void {
  * boardSync の本体。差分ではなく毎回全体を突き合わせるので、途中で失敗しても次の実行で直る。
  * 1件の失敗でほかの Issue を止めず、最後にまとめて失敗として返す。
  * 列がボードにないときは書き込まずに失敗とする(--dry-run でも同じ。通常の実行で失敗することを先に知らせる)。
+ * 出力 board は、同期が有効でボードを読めたら on。一部の Issue で失敗しても on のまま(呼び出し側が、設定の不備と区別する)。
  */
 export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
   const board = ctx.project.board;
@@ -264,8 +268,13 @@ export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
     return log("board が未設定のため同期しません");
   }
   const { columns, items } = ctx.platform.readBoard(board);
+  setOutputs({ board: "on" });
+  // ボードにない Issue は、ラベル別の一覧から探す。この一覧はラベルを変えた直後に古い内容を返すことがあるため、
+  // 追加する前に Issue を取得し直し、そのラベルで列を決める。
+  const onBoard = new Set(items.map((i) => i.number));
   const labeled = ctx.flow.stages.flatMap((s) => ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, s.id)));
-  const plan = planBoard(ctx.flow, items, labeled);
+  const missing = [...new Set(labeled.map((i) => i.number))].filter((n) => !onBoard.has(n)).map((n) => ctx.platform.getIssue(n));
+  const plan = planBoard(ctx.flow, items, missing);
   for (const n of plan.unresolved) log(`#${n}: flow ラベルが1つに定まらないため、ボードは動かしません`);
 
   const failed: number[] = [];
@@ -285,6 +294,5 @@ export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
     }
   }
   if (!plan.moves.length && !plan.unresolved.length) log("ボードはラベルと一致しています");
-  setOutputs({ board: "on" });
   if (failed.length) throw new Error(`ボードを更新できない Issue があります: ${failed.map((n) => `#${n}`).join(", ")}`);
 }
