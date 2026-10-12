@@ -209,13 +209,16 @@ DRY_RUN=1 /path/to/taskrail/scripts/local-run.sh 12   # apply は書き込まず
 GitHub Projects のボードは `flow::` ラベルを列にできないため、`taskrail board sync` がラベルから Status フィールドへ写します。
 
 1. Projects を作り、Status の選択肢を列の名前に合わせる(Inbox、Spec、Plan、Ready、In Progress、Verify、Human Review、Done)。
-   名前は `flow/flow.yml` の `title` と一致させます。選択肢がなければ同期は失敗します(taskrail は選択肢を作りません)。
+   名前は `flow/flow.yml` の `title` と一致させます。選択肢がなければ同期は失敗します(`--dry-run` でも同じ。taskrail は選択肢を作りません)。
 2. 設定の `board` に Projects の URL を書く。
 3. `taskrail board sync` を実行する(`--dry-run` で、動かす Issue の表示だけ)。`gh` のトークンには `project` スコープが必要です(`gh auth refresh -s project`)。
 
 - 写す向きはラベルからボードへの一方向です。カードをドラッグしてもラベルは変わらず、taskrail は動きません。次の同期で元の列に戻ります。
   承認は、これまで通りラベルの付け替えで行います。
-- 対象は、ボードにある Issue と、`flow::` ラベルの付いた open の Issue です(ボードになければ追加します)。`flow::` ラベルのない Issue には触りません。
+- 対象は open の Issue です。ボードにあるものと、`flow::` ラベルの付いたもの(ボードになければ追加します)を見ます。
+  `flow::` ラベルのない Issue と、閉じた Issue には触りません。閉じた Issue のカードは最後に写した列に残るので、
+  Done へ移すには Projects の自動化(Item closed → Done)を使います。
+- `board` の URL は、リポジトリと同じホストのものだけを受け付けます。
 - 毎回全体を突き合わせるので、途中で失敗しても次の実行で直ります。
 - Actions からの自動同期は未実装です。ラベルを手で変えた直後は、次に `board sync` か `local-flow.sh` を実行するまで反映されません。
 

@@ -1,4 +1,4 @@
-import type { BoardItem, ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "../src/adapters/types.js";
+import type { Board, ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "../src/adapters/types.js";
 import { ProjectSchema, loadFlow } from "../src/core/config.js";
 import type { Ctx } from "../src/core/context.js";
 
@@ -109,8 +109,14 @@ export class FakePlatform implements Platform {
   board = new Map<number, string | null>();
   /** 列の設定が失敗する Issue(API の失敗を模す)。 */
   failingBoardIssues = new Set<number>();
-  listBoardItems(): BoardItem[] {
-    return [...this.board].map(([number, column]) => ({ number, labels: this.getIssue(number).labels, column }));
+  /** ボードにある列。既定は flow.yml の全列。 */
+  boardColumns = loadFlow().stages.map((s) => s.title);
+  readBoard(): Board {
+    const items = [...this.board].map(([number, column]) => {
+      const { labels, state } = this.getIssue(number);
+      return { number, labels, state, column };
+    });
+    return { columns: this.boardColumns, items };
   }
   setBoardColumn(_board: string, issue: number, column: string): void {
     if (this.failingBoardIssues.has(issue)) throw new Error("gh api が失敗しました: HTTP 502");

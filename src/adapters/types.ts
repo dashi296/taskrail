@@ -46,8 +46,15 @@ export interface CiRun {
 export interface BoardItem {
   number: number;
   labels: string[];
+  state: "open" | "closed";
   /** 列の名前。どの列にもなければ null。 */
   column: string | null;
+}
+
+export interface Board {
+  /** ボードにある列の名前。 */
+  columns: string[];
+  items: BoardItem[];
 }
 
 /**
@@ -80,8 +87,8 @@ export interface Platform {
   commitChecks(sha: string): ChecksState;
   /** コミットに対する CI の実行。 */
   ciRuns(sha: string): CiRun[];
-  /** ボードに載っている、このリポジトリの Issue。board は設定の `board`(場所の表し方はプラットフォームごと)。 */
-  listBoardItems(board: string): BoardItem[];
+  /** ボードの列と、載っているこのリポジトリの Issue。board は設定の `board`(場所の表し方はプラットフォームごと)。 */
+  readBoard(board: string): Board;
   /** Issue をボードの列に置く。ボードになければ追加する。列がなければ失敗する(列は作らない)。 */
   setBoardColumn(board: string, issue: number, column: string): void;
 }

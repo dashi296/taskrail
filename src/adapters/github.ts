@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { BoardItem, ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
+import type { Board, BoardItem, ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
 
 /**
  * GitHub アダプタ。`gh` CLI 経由で API を呼ぶ。
@@ -181,7 +181,7 @@ export class GitHub implements Platform {
     ).map((r) => ({ name: r.name, event: r.event, status: r.status, conclusion: r.conclusion, createdAt: r.created_at }));
   }
 
-  /** 読み込んだボード(Projects)。setBoardColumn が ID の対応に使う。 */
+  /** readBoard で読み込んだボード(Projects)。setBoardColumn が ID の対応に使う。 */
   private readonly boards = new Map<string, BoardMeta>();
 
   private graphql<T>(query: string, vars: Record<string, string | number>): T {
@@ -191,9 +191,18 @@ export class GitHub implements Platform {
     return (JSON.parse(this.run(args)) as { data: T }).data;
   }
 
-  listBoardItems(board: string): BoardItem[] {
-    const m = /\/(users|orgs)\/([^/\s]+)\/projects\/(\d+)(?:[/?#]|$)/.exec(board);
-    if (!m) throw new Error(`board は Projects の URL で指定してください(例: https://github.com/users/me/projects/1): ${board}`);
+  readBoard(board: string): Board {
+    // gh は既定のホストに問い合わせる。別のホストの URL を、同じ持ち主・同じ番号の別のボードとして読み書きしない。
+    const host = this.remoteIdentity().host;
+    let url: URL | null = null;
+    try {
+      url = new URL(board);
+    } catch {
+      // 下でまとめて扱う
+    }
+    const m = url && /^\/(users|orgs)\/([^/]+)\/projects\/(\d+)(?:\/|$)/.exec(url.pathname);
+    if (!url || !m) throw new Error(`board は Projects の URL で指定してください(例: https://${host}/users/me/projects/1): ${board}`);
+    if (url.protocol !== "https:" || url.host !== host) throw new Error(`board のホストが、このリポジトリのホスト(${host})と違います: ${board}`);
     const query = BOARD_QUERY.replace("OWNER", m[1] === "orgs" ? "organization" : "user");
     const meta: BoardMeta = { projectId: "", fieldId: "", options: new Map(), items: new Map() };
     const items: BoardItem[] = [];
@@ -210,17 +219,22 @@ export class GitHub implements Platform {
         const c = n.content;
         if (typeof c?.number !== "number" || c.repository?.nameWithOwner.toLowerCase() !== this.repo.toLowerCase()) continue;
         meta.items.set(c.number, n.id);
-        items.push({ number: c.number, labels: (c.labels?.nodes ?? []).map((l) => l.name), column: n.fieldValueByName?.name ?? null });
+        items.push({
+          number: c.number,
+          labels: (c.labels?.nodes ?? []).map((l) => l.name),
+          state: c.state === "OPEN" ? "open" : "closed",
+          column: n.fieldValueByName?.name ?? null,
+        });
       }
       if (!project.items.pageInfo.hasNextPage) break;
       after = project.items.pageInfo.endCursor;
     }
     this.boards.set(board, meta);
-    return items;
+    return { columns: [...meta.options.keys()], items };
   }
 
   setBoardColumn(board: string, issue: number, column: string): void {
-    if (!this.boards.has(board)) this.listBoardItems(board);
+    if (!this.boards.has(board)) this.readBoard(board);
     const meta = this.boards.get(board)!;
     const option = meta.options.get(column);
     if (!option) throw new Error(`ボードに列「${column}」がありません。Status の選択肢に追加してください`);
@@ -255,7 +269,7 @@ interface RawProject {
     pageInfo: { hasNextPage: boolean; endCursor: string };
     nodes: {
       id: string;
-      content: { number?: number; repository?: { nameWithOwner: string }; labels?: { nodes: { name: string }[] } } | null;
+      content: { number?: number; state?: string; repository?: { nameWithOwner: string }; labels?: { nodes: { name: string }[] } } | null;
       fieldValueByName: { name?: string } | null;
     }[];
   };
@@ -271,7 +285,7 @@ const BOARD_QUERY = `query($login: String!, $number: Int!, $after: String) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
-          content { ... on Issue { number repository { nameWithOwner } labels(first: 100) { nodes { name } } } }
+          content { ... on Issue { number state repository { nameWithOwner } labels(first: 100) { nodes { name } } } }
           fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
         }
       }

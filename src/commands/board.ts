@@ -255,6 +255,7 @@ export function boardSync(opts: CommonOpts): void {
 /**
  * boardSync の本体。差分ではなく毎回全体を突き合わせるので、途中で失敗しても次の実行で直る。
  * 1件の失敗でほかの Issue を止めず、最後にまとめて失敗として返す。
+ * 列がボードにないときは書き込まずに失敗とする(--dry-run でも同じ。通常の実行で失敗することを先に知らせる)。
  */
 export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
   const board = ctx.project.board;
@@ -262,13 +263,18 @@ export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
     setOutputs({ board: "off" });
     return log("board が未設定のため同期しません");
   }
-  const items = ctx.platform.listBoardItems(board);
+  const { columns, items } = ctx.platform.readBoard(board);
   const labeled = ctx.flow.stages.flatMap((s) => ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, s.id)));
   const plan = planBoard(ctx.flow, items, labeled);
-  for (const n of plan.ambiguous) log(`#${n}: flow ラベルが複数あるため、ボードは動かしません`);
+  for (const n of plan.unresolved) log(`#${n}: flow ラベルが1つに定まらないため、ボードは動かしません`);
 
   const failed: number[] = [];
   for (const m of plan.moves) {
+    if (!columns.includes(m.column)) {
+      failed.push(m.number);
+      log(`#${m.number}: ボードに列「${m.column}」がありません。ボードに列を追加してください`);
+      continue;
+    }
     log(`#${m.number}: ${m.from ?? "(列なし)"} → ${m.column}`);
     if (opts.dryRun) continue;
     try {
@@ -278,7 +284,7 @@ export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
       log(`#${m.number}: ボードの更新に失敗しました: ${(e as Error).message}`);
     }
   }
-  if (!plan.moves.length) log("ボードはラベルと一致しています");
+  if (!plan.moves.length && !plan.unresolved.length) log("ボードはラベルと一致しています");
   setOutputs({ board: "on" });
-  if (failed.length) throw new Error(`ボードを更新できなかった Issue があります: ${failed.map((n) => `#${n}`).join(", ")}`);
+  if (failed.length) throw new Error(`ボードを更新できない Issue があります: ${failed.map((n) => `#${n}`).join(", ")}`);
 }

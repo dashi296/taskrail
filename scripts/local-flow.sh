@@ -46,20 +46,28 @@ get() { grep "^$1=" "$out" | tail -1 | cut -d= -f2- || true; }
 labels_of() { gh issue view "$issue" --json labels --jq '.labels[].name' | sort; }
 has_label() { labels_of | grep -qxF "$1"; }
 
-# ラベルの列をボードに写す。board が未設定なら、最初の1回で分かるので以降は呼ばない。
+# ラベルの列をボードに写す。前に写したときからこの Issue のラベルが変わっていなければ、何もしない。
+# board が未設定、または同期に失敗したら、この実行では以降は呼ばない(設定や権限の不備は再試行しても直らない)。
 board=on
+synced_labels="-"
 sync_board() {
   [ "$board" = on ] || return 0
+  local now
+  now="$(labels_of)" || return 0
+  [ "$now" != "$synced_labels" ] || return 0
   : >"$out"
-  GITHUB_OUTPUT="$out" "${taskrail[@]}" board sync || say "警告: ボードを同期できませんでした(工程は続けます)"
-  [ "$(get board)" = off ] && board=off
-  return 0
+  if ! GITHUB_OUTPUT="$out" "${taskrail[@]}" board sync; then
+    say "警告: ボードを同期できませんでした。この実行では以降は同期しません(工程は続けます)"
+    board=off
+  elif [ "$(get board)" = off ]; then
+    board=off
+  fi
+  synced_labels="$now"
 }
 
 ci_waited=0
 for ((step = 1; step <= max_steps; step++)); do
-  # CI を待っている間(30秒ごとの再確認)は、列が動くまで同期しない。
-  [ "$ci_waited" -gt 0 ] || sync_board
+  sync_board
   : >"$out"
   GITHUB_OUTPUT="$out" "${taskrail[@]}" next --issue "$issue" >/dev/null
   action="$(get action)"
@@ -98,7 +106,6 @@ for ((step = 1; step <= max_steps; step++)); do
       # dispatch は着手の判断に加えて、実装済み Issue の検査を再確認して verify へ進める。
       "${taskrail[@]}" dispatch "${dispatch_args[@]}"
       if ! has_label "flow::$stage"; then
-        ci_waited=0 # 列が動いたので、次の回でボードに写す
         continue
       fi
       if [ "${LOCAL_CHECKS:-}" = 1 ]; then
