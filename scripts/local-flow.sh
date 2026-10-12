@@ -58,7 +58,7 @@ sync_board() {
 
 ci_waited=0
 for ((step = 1; step <= max_steps; step++)); do
-  # CI を待っている間は列が動かないので、同期しない。
+  # CI を待っている間(30秒ごとの再確認)は、列が動くまで同期しない。
   [ "$ci_waited" -gt 0 ] || sync_board
   : >"$out"
   GITHUB_OUTPUT="$out" "${taskrail[@]}" next --issue "$issue" >/dev/null
@@ -98,6 +98,7 @@ for ((step = 1; step <= max_steps; step++)); do
       # dispatch は着手の判断に加えて、実装済み Issue の検査を再確認して verify へ進める。
       "${taskrail[@]}" dispatch "${dispatch_args[@]}"
       if ! has_label "flow::$stage"; then
+        ci_waited=0 # 列が動いたので、次の回でボードに写す
         continue
       fi
       if [ "${LOCAL_CHECKS:-}" = 1 ]; then
