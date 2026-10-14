@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { type Ctx, isEnabled, loadCtx, log, moveTo, setOutputs, trustedAuthors } from "../core/context.js";
 import { canTransition, currentStage, flowLabel } from "../core/flow.js";
 import { answersFor } from "../core/answers.js";
+import { planBoard } from "../core/board.js";
 import { runChecks } from "../core/checks.js";
 import { fetchCommit, issueFromBranch } from "../core/git.js";
 import { implementedBranch, parseRuns } from "../core/record.js";
@@ -243,4 +244,65 @@ export function resume(opts: CommonOpts & { event?: string; issue?: string }): v
   ctx.platform.removeLabel(issue.number, ctx.flow.blocked_label);
   // 同じ列のラベルを付け直すと labeled イベントが発火し、その工程がもう一度走る。
   moveTo(ctx, ctx.platform.getIssue(issue.number), stage.id);
+}
+
+/** flow ラベルの列をボードに写す。ラベルが正で、ボードは表示用。taskrail はボードの列を読まない。 */
+export function boardSync(opts: CommonOpts): void {
+  if (!isEnabled()) {
+    setOutputs({ board: "off" });
+    return log("TASKRAIL_ENABLED=false のため何もしません");
+  }
+  syncBoard(loadCtx(opts), opts);
+}
+
+/**
+ * boardSync の本体。差分ではなく毎回全体を突き合わせるので、途中で失敗しても次の実行で直る。
+ * 1件の失敗でほかの Issue を止めず、最後にまとめて失敗として返す。
+ * 列がボードにないときは書き込まずに失敗とする(--dry-run でも同じ。通常の実行で失敗することを先に知らせる)。
+ * 出力 board は、同期が有効で、ボードと Issue の一覧を読めたら on(未設定や無効なら off。呼び出し側が、以降も呼ぶかを決める)。
+ */
+export function syncBoard(ctx: Ctx, opts: { dryRun?: boolean } = {}): void {
+  const board = ctx.project.board;
+  if (!board) {
+    setOutputs({ board: "off" });
+    return log("board が未設定のため同期しません");
+  }
+  const { columns, items } = ctx.platform.readBoard(board);
+  const onBoard = new Set(items.map((i) => i.number));
+  const labeled = ctx.flow.stages.flatMap((s) => ctx.platform.listOpenIssuesByLabel(flowLabel(ctx.flow, s.id)));
+  setOutputs({ board: "on" });
+
+  // ボードにない Issue は、ラベル別の一覧から探す。この一覧はラベルを変えた直後に古い内容を返すことがあるため、
+  // 追加する前に Issue を取得し直し、そのラベルで列を決める。取得できない Issue は失敗として数え、ほかは続ける。
+  const failed: number[] = [];
+  const missing: Issue[] = [];
+  for (const n of new Set(labeled.map((i) => i.number))) {
+    if (onBoard.has(n)) continue;
+    try {
+      missing.push(ctx.platform.getIssue(n));
+    } catch (e) {
+      failed.push(n);
+      log(`#${n}: Issue を取得できないため、ボードに追加しません: ${(e as Error).message}`);
+    }
+  }
+  const plan = planBoard(ctx.flow, items, missing);
+  for (const n of plan.unresolved) log(`#${n}: flow ラベルが1つに定まらないため、ボードは動かしません`);
+
+  for (const m of plan.moves) {
+    if (!columns.includes(m.column)) {
+      failed.push(m.number);
+      log(`#${m.number}: ボードに列「${m.column}」がありません。ボードに列を追加してください`);
+      continue;
+    }
+    log(`#${m.number}: ${m.from ?? "(列なし)"} → ${m.column}`);
+    if (opts.dryRun) continue;
+    try {
+      ctx.platform.setBoardColumn(board, m.number, m.column);
+    } catch (e) {
+      failed.push(m.number);
+      log(`#${m.number}: ボードの更新に失敗しました: ${(e as Error).message}`);
+    }
+  }
+  if (!plan.moves.length && !plan.unresolved.length && !failed.length) log("ボードはラベルと一致しています");
+  if (failed.length) throw new Error(`ボードを更新できない Issue があります: ${failed.map((n) => `#${n}`).join(", ")}`);
 }

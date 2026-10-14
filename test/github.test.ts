@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHub } from "../src/adapters/github.js";
 
 /** gh の代わり。args を記録し、path に応じた応答を返す。一致しなければ空。 */
@@ -193,5 +193,170 @@ describe("GitHub アダプタ(gh の呼び出しと解釈)", () => {
       { label: "flow::doing", action: "labeled", at: "2026-01-01T00:00:00Z" },
       { label: "blocked", action: "unlabeled", at: "2026-01-03T00:00:00Z" },
     ]);
+  });
+});
+
+describe("GitHub アダプタ(ボード = Projects)", () => {
+  const BOARD = "https://github.com/users/me/projects/3";
+  // ホストの照合を、実行環境(Actions の GITHUB_SERVER_URL など)に左右させない。
+  beforeEach(() => {
+    vi.stubEnv("GH_HOST", "github.com");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  const page = (nodes: unknown[], next?: string) =>
+    JSON.stringify({
+      data: {
+        owner: {
+          projectV2: {
+            id: "P1",
+            field: { id: "F1", options: [{ id: "o-spec", name: "Spec" }, { id: "o-plan", name: "Plan" }] },
+            items: { pageInfo: { hasNextPage: !!next, endCursor: next ?? "" }, nodes },
+          },
+        },
+      },
+    });
+  const item = (id: string, number: number, labels: string[], column: string | null, repo = "o/r", state = "OPEN") => ({
+    id,
+    content: { number, state, repository: { nameWithOwner: repo }, labels: { nodes: labels.map((name) => ({ name })) } },
+    fieldValueByName: column ? { name: column } : null,
+  });
+
+  it("列の名前と、このリポジトリの Issue(ラベル・開閉・列つき)を返す", () => {
+    const { run, args } = fakeGh([
+      {
+        match: /graphql/,
+        out: page([
+          item("I1", 7, ["flow::spec", "ai::ok"], "Spec"),
+          item("I2", 8, [], null, "o/r", "CLOSED"),
+          item("I3", 9, ["flow::plan"], "Plan", "other/repo"),
+          { id: "I4", content: {}, fieldValueByName: null },
+          { id: "I5", content: null, fieldValueByName: null },
+          null,
+        ]),
+      },
+    ]);
+    expect(new GitHub("o/r", run).readBoard(BOARD)).toEqual({
+      columns: ["Spec", "Plan"],
+      items: [
+        { number: 7, labels: ["flow::spec", "ai::ok"], state: "open", column: "Spec" },
+        { number: 8, labels: [], state: "closed", column: null },
+      ],
+    });
+    expect(args().slice(0, 4)).toEqual(["api", "graphql", "--hostname", "github.com"]);
+    expect(args()[5]).toContain("owner: user(login: $login)");
+    expect(args().slice(6)).toEqual(["-f", "login=me", "-F", "number=3"]);
+  });
+
+  it("Organization のボードは organization で引く", () => {
+    const { run, args } = fakeGh([{ match: /graphql/, out: page([]) }]);
+    new GitHub("o/r", run).readBoard("https://github.com/orgs/acme/projects/12/views/1");
+    expect(args()[5]).toContain("owner: organization(login: $login)");
+    expect(args().slice(6)).toEqual(["-f", "login=acme", "-F", "number=12"]);
+  });
+
+  it("続きのページを読む", () => {
+    const outs = [page([item("I1", 1, [], null)], "c1"), page([item("I2", 2, [], null)])];
+    const calls: string[][] = [];
+    const run = (a: string[]) => {
+      calls.push(a);
+      return outs[calls.length - 1]!;
+    };
+    expect(new GitHub("o/r", run).readBoard(BOARD).items.map((i) => i.number)).toEqual([1, 2]);
+    expect(calls[1]).toContain("after=c1");
+  });
+
+  it("Projects の URL でなければ、問い合わせずに失敗する", () => {
+    const { run, calls } = fakeGh([{ match: /graphql/, out: page([]) }]);
+    const gh = new GitHub("o/r", run);
+    for (const bad of ["", "users/me/projects/3", "https://github.com/o/r", "https://github.com/x/users/me/projects/3", "https://github.com/users/me/projects/abc"]) {
+      expect(() => gh.readBoard(bad), bad).toThrow(/Projects の URL/);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("別のホストの URL は、同じ持ち主・同じ番号でも読み書きしない", () => {
+    const { run, calls } = fakeGh([{ match: /graphql/, out: page([item("I1", 7, [], null)]) }]);
+    const gh = new GitHub("o/r", run);
+    for (const other of ["https://ghe.example.com/users/me/projects/3", "https://github.com.evil.test/users/me/projects/3", "https://github.com:8443/users/me/projects/3"]) {
+      expect(() => gh.readBoard(other), other).toThrow(/ホスト/);
+      expect(() => gh.setBoardColumn(other, 7, "Spec"), other).toThrow(/ホスト/);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("https でない URL は、問い合わせずに失敗する(原因をホストの違いと取り違えない)", () => {
+    const { run, calls } = fakeGh([{ match: /graphql/, out: page([]) }]);
+    expect(() => new GitHub("o/r", run).readBoard("http://github.com/users/me/projects/3")).toThrow(/https の URL/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("リポジトリのホストが GHES なら、そのホストの URL だけを受け付け、そのホストに問い合わせる", () => {
+    // GH_HOST の大文字小文字は問わない。
+    vi.stubEnv("GH_HOST", "GHE.Example.com");
+    const { run, calls } = fakeGh([{ match: /graphql/, out: page([]) }]);
+    const gh = new GitHub("o/r", run);
+    expect(gh.readBoard("https://ghe.example.com/orgs/acme/projects/3").items).toEqual([]);
+    expect(calls[0]!.args.slice(0, 4)).toEqual(["api", "graphql", "--hostname", "ghe.example.com"]);
+    expect(() => gh.readBoard(BOARD)).toThrow(/ホスト/);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("GH_HOST がなく GITHUB_SERVER_URL だけが GHES を指していても、検証したホストに問い合わせる", () => {
+    vi.stubEnv("GH_HOST", undefined);
+    vi.stubEnv("GITHUB_SERVER_URL", "https://ghe.example.com");
+    const { run, calls } = fakeGh([
+      { match: /updateProjectV2ItemFieldValue/, out: "{}" },
+      { match: /graphql/, out: page([item("I1", 7, [], null)]) },
+    ]);
+    const gh = new GitHub("o/r", run);
+    gh.setBoardColumn("https://ghe.example.com/users/me/projects/3", 7, "Spec");
+    expect(calls.map((c) => c.args.slice(0, 4))).toEqual([
+      ["api", "graphql", "--hostname", "ghe.example.com"],
+      ["api", "graphql", "--hostname", "ghe.example.com"],
+    ]);
+    expect(() => gh.readBoard(BOARD)).toThrow(/ホスト/);
+  });
+
+  it("ボードがない、Status がないときは失敗する", () => {
+    const none = fakeGh([{ match: /graphql/, out: JSON.stringify({ data: { owner: { projectV2: null } } }) }]);
+    expect(() => new GitHub("o/r", none.run).readBoard(BOARD)).toThrow(/見つかりません/);
+    const noField = fakeGh([
+      { match: /graphql/, out: JSON.stringify({ data: { owner: { projectV2: { id: "P1", field: {}, items: { pageInfo: { hasNextPage: false }, nodes: [] } } } } }) },
+    ]);
+    expect(() => new GitHub("o/r", noField.run).readBoard(BOARD)).toThrow(/Status/);
+  });
+
+  it("ボードにある Issue は、列の選択肢の ID で更新する", () => {
+    const { run, calls } = fakeGh([
+      { match: /updateProjectV2ItemFieldValue/, out: "{}" },
+      { match: /graphql/, out: page([item("I1", 7, ["flow::plan"], "Spec")]) },
+    ]);
+    new GitHub("o/r", run).setBoardColumn(BOARD, 7, "Plan");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args.slice(6)).toEqual(["-f", "project=P1", "-f", "item=I1", "-f", "field=F1", "-f", "option=o-plan"]);
+  });
+
+  it("ボードにない Issue は、追加してから列を設定する", () => {
+    const { run, calls } = fakeGh([
+      { match: /addProjectV2ItemById/, out: JSON.stringify({ data: { addProjectV2ItemById: { item: { id: "I9" } } } }) },
+      { match: /updateProjectV2ItemFieldValue/, out: "{}" },
+      { match: /graphql/, out: page([]) },
+      { match: /issues\/7/, out: "NODE7\n" },
+    ]);
+    const gh = new GitHub("o/r", run);
+    gh.readBoard(BOARD);
+    gh.setBoardColumn(BOARD, 7, "Spec");
+    // 追加する Issue の ID も、ボードと同じホストから取る。
+    expect(calls[1]!.args).toEqual(["api", "repos/o/r/issues/7", "--hostname", "github.com", "--jq", ".node_id"]);
+    expect(calls[2]!.args.slice(6)).toEqual(["-f", "project=P1", "-f", "content=NODE7"]);
+    expect(calls[3]!.args.slice(6)).toEqual(["-f", "project=P1", "-f", "item=I9", "-f", "field=F1", "-f", "option=o-spec"]);
+  });
+
+  it("列がボードになければ、書き込まずに失敗する(列は作らない)", () => {
+    const { run, calls } = fakeGh([{ match: /graphql/, out: page([item("I1", 7, [], null)]) }]);
+    expect(() => new GitHub("o/r", run).setBoardColumn(BOARD, 7, "Verify")).toThrow(/列「Verify」/);
+    expect(calls).toHaveLength(1);
   });
 });

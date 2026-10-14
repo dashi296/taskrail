@@ -1,4 +1,4 @@
-import type { ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
+import type { Board, ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "./types.js";
 
 /**
  * GitLab アダプタ(未実装の雛形)。
@@ -42,4 +42,7 @@ export class GitLab implements Platform {
   branchHead(_branch: string): string | null { return this.todo("branchHead"); }
   commitChecks(_sha: string): ChecksState { return this.todo("commitChecks"); }
   ciRuns(_sha: string): CiRun[] { return this.todo("ciRuns"); }
+  // GitLab の Issue ボードはラベルが列になるため、同期は要らない。
+  readBoard(_board: string): Board { return this.todo("readBoard"); }
+  setBoardColumn(_board: string, _issue: number, _column: string): void { this.todo("setBoardColumn"); }
 }

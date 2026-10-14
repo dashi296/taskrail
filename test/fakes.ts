@@ -1,4 +1,4 @@
-import type { ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "../src/adapters/types.js";
+import type { Board, ChecksState, CiRun, Comment, Issue, LabelEvent, Permission, Platform, PullRequest } from "../src/adapters/types.js";
 import { ProjectSchema, loadFlow } from "../src/core/config.js";
 import type { Ctx } from "../src/core/context.js";
 
@@ -35,7 +35,10 @@ export class FakePlatform implements Platform {
     return this.remoteId;
   }
 
+  /** 取得が失敗する Issue(API の失敗を模す)。 */
+  failingIssues = new Set<number>();
   getIssue(n: number): Issue {
+    if (this.failingIssues.has(n)) throw new Error("gh api が失敗しました: HTTP 502");
     const i = this.issues.get(n);
     if (!i) throw new Error(`no issue ${n}`);
     return { ...i, labels: [...i.labels] };
@@ -61,7 +64,7 @@ export class FakePlatform implements Platform {
     this.labelEvents.set(n, [...(this.labelEvents.get(n) ?? []), { label, action: "unlabeled", at: this.tick() }]);
   }
   listOpenIssuesByLabel(label: string): Issue[] {
-    return [...this.issues.values()].filter((i) => i.state === "open" && i.labels.includes(label)).map((i) => this.getIssue(i.number));
+    return [...this.issues.values()].filter((i) => i.state === "open" && i.labels.includes(label)).map((i) => ({ ...i, labels: [...i.labels] }));
   }
   listLabelEvents(n: number): LabelEvent[] {
     return this.labelEvents.get(n) ?? [];
@@ -104,6 +107,23 @@ export class FakePlatform implements Platform {
   }
   listReviewFeedback(): string[] {
     return [];
+  }
+  /** ボード上の列(Issue 番号 → 列)。載っていない Issue はキーがない。 */
+  board = new Map<number, string | null>();
+  /** 列の設定が失敗する Issue(API の失敗を模す)。 */
+  failingBoardIssues = new Set<number>();
+  /** ボードにある列。既定は flow.yml の全列。 */
+  boardColumns = loadFlow().stages.map((s) => s.title);
+  readBoard(): Board {
+    const items = [...this.board].map(([number, column]) => {
+      const { labels, state } = this.getIssue(number);
+      return { number, labels, state, column };
+    });
+    return { columns: this.boardColumns, items };
+  }
+  setBoardColumn(_board: string, issue: number, column: string): void {
+    if (this.failingBoardIssues.has(issue)) throw new Error("gh api が失敗しました: HTTP 502");
+    this.board.set(issue, column);
   }
 }
 

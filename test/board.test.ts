@@ -2,11 +2,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { advanceIssue, checksPassed, dispatchWith, missingCiRuns, recheckImplemented, resumeIssue } from "../src/commands/board.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { advanceIssue, checksPassed, dispatchWith, missingCiRuns, recheckImplemented, resumeIssue, syncBoard } from "../src/commands/board.js";
 import { staleReason } from "../src/commands/apply.js";
 import { nextStep } from "../src/commands/next.js";
 import { answersFor } from "../src/core/answers.js";
+import { planBoard } from "../src/core/board.js";
+import { loadFlow } from "../src/core/config.js";
+import { currentStage } from "../src/core/flow.js";
 import { runChecks } from "../src/core/checks.js";
 import { renderComment, type RunRecord } from "../src/core/record.js";
 import { FakePlatform, fakeCtx } from "./fakes.js";
@@ -497,5 +500,184 @@ describe("advance は停止中・完了済みの Issue を動かさない", () =
   it("open で blocked でなければ動かす", () => {
     expect(advance()).toBe(true);
     expect(p.getIssue(1).labels).toContain("flow::verify");
+  });
+});
+
+describe("ボードの同期(planBoard / board sync)", () => {
+  const flow = loadFlow();
+  const issue = (number: number, labels: string[]) => ({ number, title: "t", body: "", labels, state: "open" as const, author: "u", url: "" });
+  const item = (number: number, labels: string[], column: string | null, state: "open" | "closed" = "open") => ({ number, labels, state, column });
+
+  it("ラベルと列が違う Issue だけを動かす", () => {
+    const plan = planBoard(flow, [item(1, ["flow::spec"], "Spec"), item(2, ["flow::doing", "ai::ok"], "Ready"), item(3, ["flow::review"], null)], []);
+    expect(plan).toEqual({
+      moves: [
+        { number: 2, column: "In Progress", from: "Ready" },
+        { number: 3, column: "Human Review", from: null },
+      ],
+      unresolved: [],
+    });
+  });
+  it("ボードにない Issue は、flow ラベルがあれば追加する", () => {
+    expect(planBoard(flow, [], [issue(5, ["flow::inbox"])]).moves).toEqual([{ number: 5, column: "Inbox", from: null }]);
+  });
+  it("ボードにある Issue は、一覧にも出てきても、いまの列を基準にする", () => {
+    expect(planBoard(flow, [item(5, ["flow::plan"], "Plan")], [issue(5, ["flow::plan"])]).moves).toEqual([]);
+  });
+  it("flow ラベルのない Issue には触らない", () => {
+    expect(planBoard(flow, [item(1, ["bug"], "Spec")], [])).toEqual({ moves: [], unresolved: [] });
+  });
+  it("閉じた Issue には触らない(ラベルが残っていても、ボードで動かされていても)", () => {
+    expect(planBoard(flow, [item(1, ["flow::doing"], "Done", "closed"), item(2, ["flow::doing"], null, "closed")], [])).toEqual({ moves: [], unresolved: [] });
+  });
+  it("列が1つに定まらない(複数ある、未定義の列だけ)なら動かさず、不整合として返す", () => {
+    const plan = planBoard(flow, [item(1, ["flow::spec", "flow::plan"], "Spec"), item(2, ["flow::nowhere"], null)], []);
+    expect(plan).toEqual({ moves: [], unresolved: [1, 2] });
+  });
+  it("列の判定は currentStage と同じ(未定義のラベルが混ざっていても、定義済みの1つで決まる)", () => {
+    const labels = ["flow::doing", "flow::nowhere"];
+    expect(currentStage(flow, labels)?.id).toBe("doing");
+    expect(planBoard(flow, [item(1, labels, null)], []).moves).toEqual([{ number: 1, column: "In Progress", from: null }]);
+  });
+
+  describe("board sync", () => {
+    let p: FakePlatform;
+    let errors: ReturnType<typeof vi.spyOn>;
+    const BOARD = "https://example.test/users/o/projects/1";
+    const logged = () => errors.mock.calls.map((c) => String(c[0])).join("\n");
+    beforeEach(() => {
+      errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      // 出力を標準出力に出させる(Actions 上では GITHUB_OUTPUT のファイルに書かれるため)。
+      vi.stubEnv("GITHUB_OUTPUT", "");
+      p = new FakePlatform();
+      p.addIssue(1, ["flow::spec"]);
+      p.addIssue(2, ["flow::doing"]);
+      p.board.set(1, "Inbox");
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("列を直し、ボードにない Issue を追加する", () => {
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect([...p.board]).toEqual([
+        [1, "Spec"],
+        [2, "In Progress"],
+      ]);
+    });
+    it("もう一度実行しても書き込まない", () => {
+      const ctx = fakeCtx(p, { board: BOARD });
+      syncBoard(ctx);
+      const set = vi.spyOn(p, "setBoardColumn");
+      syncBoard(ctx);
+      expect(set).not.toHaveBeenCalled();
+    });
+    it("--dry-run では書き込まない", () => {
+      syncBoard(fakeCtx(p, { board: BOARD }), { dryRun: true });
+      expect([...p.board]).toEqual([[1, "Inbox"]]);
+    });
+    it("board が未設定なら、ボードを読みも書きもしない", () => {
+      const read = vi.spyOn(p, "readBoard");
+      syncBoard(fakeCtx(p));
+      expect(read).not.toHaveBeenCalled();
+      expect([...p.board]).toEqual([[1, "Inbox"]]);
+    });
+    it("1件の失敗でほかの Issue を止めず、最後に失敗として返す", () => {
+      p.failingBoardIssues.add(1);
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/#1/);
+      expect(p.board.get(2)).toBe("In Progress");
+    });
+    it("列がボードになければ、その Issue は書き込まずに失敗とし、ほかは写す", () => {
+      p.boardColumns = p.boardColumns.filter((c) => c !== "Spec");
+      const set = vi.spyOn(p, "setBoardColumn");
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/#1/);
+      expect(set).toHaveBeenCalledTimes(1);
+      expect([...p.board]).toEqual([
+        [1, "Inbox"],
+        [2, "In Progress"],
+      ]);
+      expect(logged()).toContain("列「Spec」がありません");
+    });
+    it("--dry-run でも、列がボードになければ失敗する", () => {
+      p.boardColumns = p.boardColumns.filter((c) => c !== "Spec");
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }), { dryRun: true })).toThrow(/#1/);
+      expect([...p.board]).toEqual([[1, "Inbox"]]);
+    });
+    it("閉じた Issue の列は直さない", () => {
+      p.issues.set(1, { ...p.getIssue(1), state: "closed" });
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect(p.board.get(1)).toBe("Inbox");
+    });
+    it("列が定まらない Issue は動かさず、「一致しています」とは言わない", () => {
+      p.addLabels(1, ["flow::plan"]);
+      p.board.set(2, "In Progress");
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect(p.board.get(1)).toBe("Inbox");
+      expect(logged()).toContain("#1: flow ラベルが1つに定まらない");
+      expect(logged()).not.toContain("一致しています");
+    });
+    it("ボードにない Issue は、古い一覧ではなく、取得し直したラベルで列を決める", () => {
+      // ラベル別の一覧は、ラベルを変えた直後に古い内容を返すことがある(#2 は doing から verify に移った直後)。
+      const stale = { ...p.getIssue(2) };
+      p.removeLabel(2, "flow::doing");
+      p.addLabels(2, ["flow::verify"]);
+      vi.spyOn(p, "listOpenIssuesByLabel").mockImplementation((label) => (label === "flow::doing" ? [stale] : []));
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect(p.board.get(2)).toBe("Verify");
+    });
+    it("一覧に出た後で閉じられた Issue は追加しない", () => {
+      const stale = { ...p.getIssue(2) };
+      p.issues.set(2, { ...p.getIssue(2), state: "closed" });
+      vi.spyOn(p, "listOpenIssuesByLabel").mockImplementation((label) => (label === "flow::doing" ? [stale] : []));
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect(p.board.has(2)).toBe(false);
+    });
+    it("追加する Issue を取得できなくても、ほかの Issue は写し、最後に失敗として返す", () => {
+      p.addIssue(3, ["flow::plan"]);
+      p.failingIssues.add(2);
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/#2/);
+      expect([...p.board]).toEqual([
+        [1, "Spec"],
+        [3, "Plan"],
+      ]);
+      expect(logged()).toContain("#2: Issue を取得できない");
+      expect(logged()).not.toContain("一致しています");
+    });
+    it("Issue の一覧を読めなければ、board を出力せずに失敗する", () => {
+      const out = vi.mocked(console.log);
+      vi.spyOn(p, "listOpenIssuesByLabel").mockImplementation(() => {
+        throw new Error("gh api が失敗しました: HTTP 502");
+      });
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/502/);
+      expect(out.mock.calls).toEqual([]);
+      expect([...p.board]).toEqual([[1, "Inbox"]]);
+    });
+    it("ボードを読めたら、一部の Issue で失敗しても board=on を出力する(設定の不備と区別できる)", () => {
+      const out = vi.mocked(console.log);
+      p.failingBoardIssues.add(1);
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow();
+      expect(out.mock.calls.map((c) => c[0])).toContain("board=on");
+    });
+    it("ボードを読めなければ、board を出力しない", () => {
+      const out = vi.mocked(console.log);
+      vi.spyOn(p, "readBoard").mockImplementation(() => {
+        throw new Error("gh api が失敗しました: HTTP 401");
+      });
+      expect(() => syncBoard(fakeCtx(p, { board: BOARD }))).toThrow(/401/);
+      expect(out.mock.calls).toEqual([]);
+    });
+    it("board が未設定なら board=off を出力する", () => {
+      const out = vi.mocked(console.log);
+      syncBoard(fakeCtx(p));
+      expect(out.mock.calls.map((c) => c[0])).toEqual(["board=off"]);
+    });
+    it("ラベルは変えない(ボードからラベルへは写さない)", () => {
+      p.board.set(2, "Done");
+      syncBoard(fakeCtx(p, { board: BOARD }));
+      expect(p.getIssue(2).labels).toEqual(["flow::doing"]);
+      expect(p.board.get(2)).toBe("In Progress");
+    });
   });
 });

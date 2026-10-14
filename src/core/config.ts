@@ -69,6 +69,8 @@ export const ProjectSchema = z
     branch_prefix: z.string().default("issue-"),
     /** エージェントが完了前に通すコマンド(lint・型チェック・テスト)。空ならリポジトリの文書から判断させる。 */
     check_commands: z.array(z.string()).default([]),
+    /** 列を写すボードの場所(表し方はプラットフォームごと)。空なら `board sync` は何もしない。 */
+    board: z.string().default(""),
   })
   .strict();
 

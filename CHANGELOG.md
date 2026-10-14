@@ -27,6 +27,8 @@
 - 設定は 既定値 < リポジトリ変数 `TASKRAIL_CONFIG` < `taskrail.yml` の順に解決する。`bot_logins` は Actions では App から自動で決まる
 - 設定に `check_commands` を追加。プロンプトにルール文書の一覧、コマンド、保護パスを明記し、`docs/constitution.md` がなければ同梱の既定の原則を埋め込む
 - 呼び出し側のワークフローを薄くした。イベントからボード操作への振り分けは `board.yml` が行う
+- `board sync`: `flow::` ラベルの列を、設定 `board` のボード(GitHub Projects の Status)に写す。ラベルからボードへの一方向で、taskrail はボードの列を読まない。`local-flow.sh` は開始時と、その Issue の列が動くたびに呼ぶ。
+  閉じた Issue には触らない。設定に `board` を足したため、`taskrail.yml` かリポジトリ変数 `TASKRAIL_CONFIG` に `board` を書いたリポジトリは、この版より前の taskrail では設定の検証に失敗する
 - `doctor`: rulesets と Organization の Secrets を認識する。設定の出どころと `workflow_run` の CI 名を検査する
 - ルール文書(`CLAUDE.md`、`AGENTS.md`、`docs/constitution.md`)と `taskrail.yml` を、設定では外せない保護パスにした
 - CI が複数あるとき、ブランチの検査がすべて成功してから Verify に進める(`advance --require-checks`)

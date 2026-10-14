@@ -8,6 +8,9 @@
 #   check-ci  … 実装した PR の CI の成功を待って doing → verify
 #   stop      … 人間の承認待ち、blocked、完了。ここで止まる
 #
+# 設定に board があれば、開始時と、この Issue の列が動くたびに、列をボードへ写す(taskrail board sync)。
+# ボードは表示用なので、同期に失敗しても工程は止めない。
+#
 # 環境変数:
 #   MAX_STEPS    … 進める工程の上限(既定 20)
 #   CI_TIMEOUT   … CI を待つ秒数(既定 1200)。0 で待たずに止まる
@@ -43,8 +46,53 @@ get() { grep "^$1=" "$out" | tail -1 | cut -d= -f2- || true; }
 labels_of() { gh issue view "$issue" --json labels --jq '.labels[].name' | sort; }
 has_label() { labels_of | grep -qxF "$1"; }
 
+# ラベルの列をボードに写す。前に写したときからこの Issue のラベルが変わっていなければ、何もしない。
+# 同期が無効(board が未設定、TASKRAIL_ENABLED=false)なら、この実行では以降は呼ばない。
+# 失敗したときは「写した」と記録せず、次の回にもう一度試す(一時的な失敗のため)。続けて 3 回失敗したら:
+#   - ボードを読めない(設定や権限の不備): この実行では以降は呼ばない
+#   - ボードは読めたが、一部の Issue を写せない(ほかの Issue の列がボードにない、など): この Issue の列が次に動くまで試さない
+board=on
+synced_labels="-"
+sync_failures=0
+sync_board() {
+  [ "$board" = on ] || return 0
+  local now
+  if ! now="$(labels_of)"; then
+    say "警告: #$issue のラベルを取得できないため、ボードの同期を見送ります"
+    return 0
+  fi
+  [ "$now" != "$synced_labels" ] || return 0
+  : >"$out"
+  if GITHUB_OUTPUT="$out" "${taskrail[@]}" board sync; then
+    [ "$(get board)" = on ] || board=off
+    synced_labels="$now"
+    sync_failures=0
+    return 0
+  fi
+  sync_failures=$((sync_failures + 1))
+  if [ "$sync_failures" -lt 3 ]; then
+    say "警告: ボードを同期できませんでした。次の回にもう一度試します(工程は続けます)"
+  elif [ "$(get board)" = on ]; then
+    say "警告: ボードに写せない Issue が残っています。この Issue の列が次に動くまで同期を試しません(工程は続けます)"
+    synced_labels="$now"
+    sync_failures=0
+  else
+    say "警告: ボードを読めません。この実行では以降は同期しません(工程は続けます)"
+    board=off
+  fi
+}
+
+# dispatch はほかの Issue も動かすため、この Issue が動いていなくても、止まる前にボードに写す。
+stop_after_dispatch() {
+  synced_labels="-"
+  sync_board
+  say "停止: $1"
+  exit 0
+}
+
 ci_waited=0
 for ((step = 1; step <= max_steps; step++)); do
+  sync_board
   : >"$out"
   GITHUB_OUTPUT="$out" "${taskrail[@]}" next --issue "$issue" >/dev/null
   action="$(get action)"
@@ -68,8 +116,9 @@ for ((step = 1; step <= max_steps; step++)); do
       # 列を移した直後は GitHub の検索に反映されるまで数十秒かかる。数回試してから諦める。
       for attempt in 1 2 3; do
         "${taskrail[@]}" dispatch "${dispatch_args[@]}"
+        synced_labels="-" # dispatch はほかの Issue も動かすので、この Issue が動かなくても次の回にボードに写す
         [ "$(labels_of)" = "$before" ] || break
-        [ "$attempt" = 3 ] && { say "停止: 着手できません(WIP上限、依存、ai::ok の未付与のいずれか)"; exit 0; }
+        [ "$attempt" = 3 ] && stop_after_dispatch "着手できません(WIP上限、依存、ai::ok の未付与のいずれか)"
         say "着手されませんでした。$((attempt * 15)) 秒後にもう一度試します"
         sleep $((attempt * 15))
       done
@@ -81,17 +130,16 @@ for ((step = 1; step <= max_steps; step++)); do
       ;;
     check-ci)
       # dispatch は着手の判断に加えて、実装済み Issue の検査を再確認して verify へ進める。
+      # ほかの Issue が動いても、待っている間(30秒ごと)は写さず、止まるときに写す(この Issue が動けば次の回に写る)。
       "${taskrail[@]}" dispatch "${dispatch_args[@]}"
       if ! has_label "flow::$stage"; then
         continue
       fi
       if [ "${LOCAL_CHECKS:-}" = 1 ]; then
-        say "停止: 手元の検査が通りませんでした。$stage のまま止まります"
-        exit 0
+        stop_after_dispatch "手元の検査が通りませんでした。$stage のまま止まります"
       fi
       if [ "$ci_waited" -ge "$ci_timeout" ]; then
-        say "停止: CI が $ci_timeout 秒以内に成功しませんでした。PR の CI を確認してください"
-        exit 0
+        stop_after_dispatch "CI が $ci_timeout 秒以内に成功しませんでした。PR の CI を確認してください"
       fi
       say "[$step] CI の完了を待っています($ci_waited/$ci_timeout 秒)"
       sleep 30
@@ -104,4 +152,5 @@ for ((step = 1; step <= max_steps; step++)); do
   esac
 done
 
+sync_board
 say "停止: 工程の上限($max_steps)に達しました"
